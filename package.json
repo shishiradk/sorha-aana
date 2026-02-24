@@ -1,0 +1,32 @@
+{
+  "name": "sorha-aana-worker",
+  "version": "1.0.0",
+  "description": "AI-powered real estate matching engine for Nepal",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply real-state",
+    "db:inspect": "node inspect-database.js",
+    "db:query": "node query-db.js",
+    "generate:embeddings": "curl -X POST http://localhost:8787/generate-embeddings",
+    "test": "curl http://localhost:8787/test"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "@types/node": "^20.11.5",
+    "typescript": "^5.3.3",
+    "wrangler": "^4.0.0"
+  },
+  "keywords": [
+    "real-estate",
+    "nepal",
+    "ai",
+    "vector-search"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "mysql2": "^3.18.0"
+  }
+}
