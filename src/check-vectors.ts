@@ -15,10 +15,9 @@ export async function checkVectorizedData(env: Env) {
     return {
       success: true,
       index: {
-        name: 'property-embeddings',
-        dimensions: stats.dimensions,
+        dimensions: (stats as any).dimensions,
         vectors_count: stats.vectorsCount,
-        metric: stats.metric
+        metric: (stats as any).metric
       },
       sample_vectors: sample.matches.map(match => ({
         id: match.id,
@@ -29,7 +28,7 @@ export async function checkVectorizedData(env: Env) {
   } catch (error) {
     return {
       success: false,
-      error: error.message
+      error: error instanceof Error ? error.message : String(error)
     };
   }
 }

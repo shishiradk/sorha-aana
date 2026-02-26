@@ -68,10 +68,30 @@ export class RealEstateRAG {
         bedrooms: property.bedrooms,
         bathrooms: property.bathrooms,
         built_up_area: property.built_up_area,
+        furnishing: property.furnishing_status || 'Not specified',
+        amenities: this.parseJsonField(property.amenities),
+        highlights: this.parseJsonField(property.highlights),
         similarity: match?.score || 0,
         formatted_price: this.formatPrice(property.price)
       };
     }).sort((a, b) => b.similarity - a.similarity);
+  }
+
+  private parseJsonField(field: any): string[] {
+    if (!field) return [];
+    if (Array.isArray(field)) return field.filter(item => item && typeof item === 'string');
+    if (typeof field === 'string') {
+      if (field.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(field);
+          return Array.isArray(parsed) ? parsed.filter(item => item && typeof item === 'string') : [field];
+        } catch {
+          return [field];
+        }
+      }
+      return field.trim() ? [field] : [];
+    }
+    return [];
   }
 
   private formatPrice(price: number): string {
@@ -86,19 +106,31 @@ export class RealEstateRAG {
     }
 
     const context = properties.map((p, i) =>
-      `${i + 1}. ${p.title} in ${p.city} (${p.area}). Price: ${p.formatted_price}. ` +
-      `${p.bedrooms} beds, ${p.bathrooms} baths. Type: ${p.property_type}.`
-    ).join('\n');
+      `${i + 1}. **${p.title}**
+      - Location: ${p.city} (${p.area})
+      - Price: ${p.formatted_price}
+      - Details: ${p.bedrooms} beds, ${p.bathrooms} baths, ${p.built_up_area} sqft
+      - Type: ${p.property_type} for ${p.listing_type}
+      - Furnishing: ${p.furnishing}
+      - Amenities: ${p.amenities.join(', ') || 'N/A'}`
+    ).join('\n\n');
 
-    const prompt = `You are a helpful real estate assistant for Nepal. 
-    user asked: "${question}"
+    const prompt = `You are a helpful and knowledgeable real estate assistant for Nepal. 
+    A user has asked: "${question}"
     
-    Here are the top matching properties found in the database:
+    Here are the top matching properties found in our database based on their request:
+    
     ${context}
     
-    Please assume the role of real estate agent and provide a helpful answer summarizing these options. Highlight the best matches based on the user's request. 
-    If prices are in Crores/Lakhs, keep that format.
-    Keep the answer concise and encouraging.`;
+    Please assume the role of an expert real estate agent and provide a helpful, structured response addressing the user's specific request. 
+    
+    Rules for your response:
+    1. Acknowledge what they are looking for.
+    2. Highlight 2-3 of the BEST matches from the provided list, explaining WHY they fit.
+    3. Use bullet points and bold text for readability.
+    4. Mention the prices exactly as provided in the context (often in Crores/Lakhs).
+    5. Be concise, encouraging, and professional.
+    6. If no properties perfectly match, suggest the closest alternatives from the list.`;
 
     try {
       const response = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {

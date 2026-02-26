@@ -4,14 +4,68 @@
 // Note: Uses regular queries (not prepared statements) for Hyperdrive compatibility
 // Usage: Import and use queryAll(), queryOne() functions
 
-import mysql from 'mysql2/promise';
+import mysql from 'mysql';
+import { promisify } from 'util';
+
+// Validate connection string format
+function validateConnectionString(connectionString: string | undefined): void {
+  if (!connectionString) {
+    throw new Error('HYPERDRIVE connection string not found. Ensure HYPERDRIVE binding is configured in wrangler.json');
+  }
+
+  if (typeof connectionString !== 'string') {
+    throw new Error('Invalid connection string type. Expected string, got ' + typeof connectionString);
+  }
+
+  if (!connectionString.startsWith('mysql://')) {
+    throw new Error('Invalid connection string format. Expected mysql://user:password@host:port/database');
+  }
+}
+
+// Create connection with retry logic
+async function createConnectionWithRetry(
+  connectionString: string,
+  maxRetries: number = 3,
+  initialDelayMs: number = 100
+): Promise<any> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delayMs = initialDelayMs * Math.pow(2, attempt - 1);
+        console.log(`Connection retry attempt ${attempt + 1}/${maxRetries}, waiting ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+
+      const connection = mysql.createConnection(connectionString);
+
+      // Promisify the connect method
+      await new Promise((resolve, reject) => {
+        connection.connect((err) => {
+          if (err) reject(err);
+          else resolve(null);
+        });
+      });
+
+      console.log(`✓ Database connection established successfully (using legacy mysql driver)`);
+      return connection;
+    } catch (error) {
+      lastError = error as Error;
+      console.warn(`✗ Connection attempt ${attempt + 1}/${maxRetries} failed: ${lastError.message}`);
+    }
+  }
+
+  throw new Error(
+    `Failed to connect to database after ${maxRetries} attempts. Last error: ${lastError?.message}`
+  );
+}
 
 /**
  * Execute a query and return all rows
- * Hyperdrive doesn't support prepared statements, so use simple queries
  * @param env Environment with HYPERDRIVE binding
  * @param sql SQL query string with ? placeholders
- * @param params Query parameters (will be escaped and inserted into SQL)
+ * @param params Query parameters
  * @returns Object with results array
  */
 export async function queryAll<T = any>(
@@ -19,15 +73,27 @@ export async function queryAll<T = any>(
   sql: string,
   params: any[] = []
 ): Promise<{ results: T[] }> {
-  const connection = await mysql.createConnection(env.HYPERDRIVE.connectionString);
+  let connection: any = null;
 
   try {
-    // Build the query by escaping and interpolating parameters
-    const escapedSql = buildQuery(sql, params);
-    const [rows] = await connection.query(escapedSql);
-    return { results: rows as T[] };
+    validateConnectionString(env.HYPERDRIVE?.connectionString);
+    connection = await createConnectionWithRetry(env.HYPERDRIVE.connectionString, 2, 50);
+
+    return await new Promise((resolve, reject) => {
+      (connection as any).query(sql, params, (err: any, results: any) => {
+        if (err) reject(err);
+        else resolve({ results: results as T[] });
+      });
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`Query execution error: ${errorMsg}`);
+    console.error(`Query: ${sql.substring(0, 200)}`);
+    throw new Error(`Database query failed: ${errorMsg}`);
   } finally {
-    await connection.end();
+    if (connection) {
+      connection.end();
+    }
   }
 }
 
@@ -43,15 +109,26 @@ export async function queryOne<T = any>(
   sql: string,
   params: any[] = []
 ): Promise<T | null> {
-  const connection = await mysql.createConnection(env.HYPERDRIVE.connectionString);
+  let connection: any = null;
 
   try {
-    // Build the query by escaping and interpolating parameters
-    const escapedSql = buildQuery(sql, params);
-    const [rows] = await connection.query(escapedSql);
-    return (rows[0] as T) || null;
+    validateConnectionString(env.HYPERDRIVE?.connectionString);
+    connection = await createConnectionWithRetry(env.HYPERDRIVE.connectionString, 2, 50);
+
+    return await new Promise((resolve, reject) => {
+      (connection as any).query(sql, params, (err: any, results: any) => {
+        if (err) reject(err);
+        else resolve((results[0] as T) || null);
+      });
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`Query execution error: ${errorMsg}`);
+    throw new Error(`Database query failed: ${errorMsg}`);
   } finally {
-    await connection.end();
+    if (connection) {
+      connection.end();
+    }
   }
 }
 
@@ -60,22 +137,33 @@ export async function queryOne<T = any>(
  * @param env Environment with HYPERDRIVE binding
  * @param sql SQL query string with ? placeholders
  * @param params Query parameters
- * @returns Query result
+ * @returns Query result with affected rows
  */
 export async function queryExecute(
   env: any,
   sql: string,
   params: any[] = []
 ): Promise<any> {
-  const connection = await mysql.createConnection(env.HYPERDRIVE.connectionString);
+  let connection: any = null;
 
   try {
-    // Build the query by escaping and interpolating parameters
-    const escapedSql = buildQuery(sql, params);
-    const result = await connection.query(escapedSql);
-    return result;
+    validateConnectionString(env.HYPERDRIVE?.connectionString);
+    connection = await createConnectionWithRetry(env.HYPERDRIVE.connectionString, 2, 50);
+
+    return await new Promise((resolve, reject) => {
+      (connection as any).query(sql, params, (err: any, result: any) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`Query execution error: ${errorMsg}`);
+    throw new Error(`Database query failed: ${errorMsg}`);
   } finally {
-    await connection.end();
+    if (connection) {
+      connection.end();
+    }
   }
 }
 
@@ -97,11 +185,11 @@ function buildQuery(sql: string, params: any[]): string {
     const placeholder = '?';
     const index = result.indexOf(placeholder);
     if (index === -1) break;
-    
+
     const escapedValue = escapeSqlValue(params[i]);
     result = result.substring(0, index) + escapedValue + result.substring(index + 1);
   }
-  
+
   return result;
 }
 
