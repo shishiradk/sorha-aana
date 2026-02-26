@@ -4,8 +4,7 @@
 // Note: Uses regular queries (not prepared statements) for Hyperdrive compatibility
 // Usage: Import and use queryAll(), queryOne() functions
 
-import mysql from 'mysql';
-import { promisify } from 'util';
+import mysql from 'mysql2';
 
 // Validate connection string format
 function validateConnectionString(connectionString: string | undefined): void {

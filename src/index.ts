@@ -17,6 +17,12 @@ export interface Env {
 }
 
 export default {
+  // Runs every 5 minutes via Cloudflare Cron Trigger
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log('Cron: processing vectorization queue...');
+    ctx.waitUntil(processVectorizationQueue(env, 100));
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;

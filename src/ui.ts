@@ -206,21 +206,38 @@ export const html = `
                 document.querySelector('.ai-response').style.display = 'block';
 
                 // Show Listings
-                listings.innerHTML = data.properties.map(p => \`
+                const val = v => (v !== null && v !== undefined && v !== '' && v !== 'null') ? v : null;
+
+                listings.innerHTML = data.properties.map(p => {
+                    const details = [
+                        val(p.bedrooms) ? p.bedrooms + ' BEDS' : null,
+                        val(p.layout) && !val(p.bedrooms) ? p.layout : null,
+                        val(p.listing_type) ? p.listing_type.toUpperCase() : null,
+                        val(p.property_type) ? p.property_type.toUpperCase() : null,
+                    ].filter(Boolean);
+
+                    const meta = [
+                        val(p.area),
+                        val(p.facing),
+                        val(p.road_access),
+                        p.furnished === 'YES' ? 'Furnished' : null,
+                        val(p.house_storey) ? p.house_storey + ' Storey' : null,
+                    ].filter(Boolean);
+
+                    const location = val(p.location) || val(p.district) || 'Nepal';
+
+                    return \`
                     <div class="property-card">
                         <div class="card-header">
                             <h3 class="card-title">\${p.title}</h3>
                             <span class="score">\${Math.round(p.similarity * 100)}% MATCH</span>
                         </div>
-                        <div class="card-price">\${p.formatted_price}</div>
-                        <div class="card-details">
-                            <span>\${p.bedrooms} BEDS</span>
-                            <span>\${p.bathrooms} BATHS</span>
-                            <span>\${p.property_type.toUpperCase()}</span>
-                        </div>
-                        <div class="card-location">\${p.area}, \${p.city}</div>
-                    </div>
-                \`).join('');
+                        <div class="card-price">\${val(p.price) || 'Price on request'}</div>
+                        \${details.length ? \`<div class="card-details">\${details.map(d => \`<span>\${d}</span>\`).join('')}</div>\` : ''}
+                        \${meta.length ? \`<div class="card-details" style="font-weight:normal;color:#555;">\${meta.map(m => \`<span>\${m}</span>\`).join('')}</div>\` : ''}
+                        <div class="card-location">\${location}</div>
+                    </div>\`;
+                }).join('');
 
                 resultArea.style.display = 'block';
             } catch (error) {

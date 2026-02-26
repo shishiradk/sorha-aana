@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply real-state",
-    "db:inspect": "node inspect-database.js",
+    "db:inspect": "npx tsx inspect-database.ts",
     "db:query": "node query-db.js",
     "generate:embeddings": "curl -X POST http://localhost:8787/generate-embeddings",
     "test": "curl http://localhost:8787/test"
@@ -15,6 +15,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240208.0",
     "@types/node": "^20.11.5",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.3",
     "wrangler": "^4.0.0"
   },
@@ -27,6 +28,10 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@types/mysql": "^2.15.27",
+    "claude": "^0.1.1",
+    "dotenv": "^17.3.1",
+    "mysql": "^2.18.1",
     "mysql2": "^3.18.0"
   }
 }
