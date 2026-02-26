@@ -1,19 +1,32 @@
 // src/db-utils.ts
-// Hyperdrive/MySQL query helpers using mysql2/promise
-// Uses pool.query() (text protocol) — Hyperdrive does not support binary/prepared-statement protocol
-import { createPool } from 'mysql2/promise';
+// Hyperdrive/MySQL query helpers
+// Uses createConnection (NOT createPool) — Hyperdrive IS the connection pool
+// Uses connection.query() (NOT execute) — Hyperdrive doesn't support prepared statements
+// Uses disableEval: true — required for Cloudflare Workers compatibility
+import { createConnection } from 'mysql2/promise';
+
+async function getConnection(env: any) {
+  return createConnection({
+    host: env.HYPERDRIVE.host,
+    user: env.HYPERDRIVE.user,
+    password: env.HYPERDRIVE.password,
+    database: env.HYPERDRIVE.database,
+    port: env.HYPERDRIVE.port,
+    disableEval: true,
+  });
+}
 
 export async function queryAll<T = any>(
   env: any,
   sql: string,
   params: any[] = []
 ): Promise<{ results: T[] }> {
-  const pool = createPool(env.HYPERDRIVE.connectionString);
+  const connection = await getConnection(env);
   try {
-    const [rows] = await pool.query(sql, params);
+    const [rows] = await connection.query(sql, params);
     return { results: rows as T[] };
   } finally {
-    await pool.end();
+    await connection.end();
   }
 }
 
@@ -31,11 +44,11 @@ export async function queryExecute(
   sql: string,
   params: any[] = []
 ): Promise<any> {
-  const pool = createPool(env.HYPERDRIVE.connectionString);
+  const connection = await getConnection(env);
   try {
-    const [result] = await pool.query(sql, params);
+    const [result] = await connection.query(sql, params);
     return result;
   } finally {
-    await pool.end();
+    await connection.end();
   }
 }
