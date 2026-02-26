@@ -200,9 +200,18 @@ export const html = `
                 });
 
                 const data = await res.json();
-                
+
+                // Show server-side error clearly
+                if (!res.ok || data.error) {
+                    listings.innerHTML = '';
+                    resultArea.style.display = 'block';
+                    document.querySelector('.ai-response').style.display = 'block';
+                    aiText.innerHTML = '<strong>Error:</strong> ' + (data.error || 'Unknown server error. Check worker logs.');
+                    return;
+                }
+
                 // Show AI Answer
-                aiText.innerHTML = data.answer.replace(/\\n/g, '<br>'); // Simple line break
+                aiText.innerHTML = (data.answer || '').replace(/\n/g, '<br>');
                 document.querySelector('.ai-response').style.display = 'block';
 
                 // Show Listings
