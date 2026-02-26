@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install mysql2@3.9.7 --save-exact)",
+      "Bash(node -e \"const m = require\\(''mysql2''\\); console.log\\(''mysql2 version:'', require\\(''./node_modules/mysql2/package.json''\\).version\\)\")"
+    ]
+  }
+}
