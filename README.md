@@ -41,7 +41,7 @@ Sorha Aana (सोह्र आना) is an AI-powered real estate assistant fo
 |------|---------|
 | `src/index.ts` | Main Worker entry point, all route handling |
 | `src/rag-engine.ts` | Core RAG: embed query → vector search → AI answer |
-| `src/vectorize.ts` | Vectorization engine for sellers + rentals |
+| `src/vectorize.ts` | Vectorization engine for all 5 tables (sellers, rental_owners, buyers, tenants, agents) |
 | `src/vectorization-queue-processor.ts` | Queue consumer for auto-vectorization on DB changes |
 | `src/db-utils.ts` | MySQL connection helpers (queryAll, queryOne, queryExecute) |
 | `src/inspect-db.ts` | Schema inspection utilities |
@@ -68,8 +68,11 @@ VECTORIZE.query(embedding, topK=20)   ← Cloudflare Vectorize (sorha-index)
         ▼ metadata: { source_table, source_id, listing_type, ... }
         │
         ▼
-queryAll() → sellers JOIN districts,municipalities,provinces,customers
-           → rental_owners JOIN districts,municipalities,provinces,customers
+queryAll() → sellers       JOIN districts, municipalities, provinces, customers
+           → rental_owners JOIN districts, municipalities, provinces, customers
+           → buyers        JOIN districts, municipalities, customers
+           → tenants       JOIN districts, municipalities, customers
+           → agents
         │
         ▼
 generateAnswer()                  ← @cf/meta/llama-3.1-8b-instruct
@@ -368,14 +371,26 @@ Vectorization converts property text into 1024-dimensional embeddings stored in 
 
 ### Vector ID format
 
-Each property gets 2 vectors:
+Each entity gets 2 vectors (main + keywords):
 
-| Vector ID | Content |
-|-----------|---------|
-| `seller_{id}_main` | Full property description |
-| `seller_{id}_keywords` | Search-optimized keywords |
-| `rental_{id}_main` | Full rental description |
-| `rental_{id}_keywords` | Search-optimized keywords |
+| Source Table | Vector IDs | Content |
+|-------------|-----------|---------|
+| `sellers` | `seller_{id}_main`, `seller_{id}_keywords` | Property description, price, area, location, amenities |
+| `rental_owners` | `rental_{id}_main`, `rental_{id}_keywords` | Rental description, rent amount, bedroom count, location |
+| `buyers` | `buyer_{id}_main`, `buyer_{id}_keywords` | Budget range, property type sought, preferred location |
+| `tenants` | `tenant_{id}_main`, `tenant_{id}_keywords` | Rent budget, bedroom needs, preferred area |
+| `agents` | `agent_{id}_main`, `agent_{id}_keywords` | Name, working area, contact info |
+
+### Total vectors
+
+| Table | Rows | Vectors |
+|-------|------|---------|
+| `sellers` | ~1,582 | ~3,164 |
+| `rental_owners` | ~160 | ~320 |
+| `buyers` | ~745 | ~1,490 |
+| `tenants` | ~234 | ~468 |
+| `agents` | ~118 | ~236 |
+| **Total** | **~2,839** | **~5,678** |
 
 ### Run initial full vectorization
 
@@ -385,7 +400,7 @@ curl -X POST http://127.0.0.1:8787/api/vectorize/full \
   -d '{"mode": "full"}'
 ```
 
-This runs in the background. With 1582 sellers + 160 rentals = **~3484 vectors** to create.
+This runs in the background across all 5 tables. With ~2,839 entities = **~5,678 vectors** to create.
 
 ### Run incremental vectorization (only new/changed)
 
@@ -435,25 +450,33 @@ curl http://127.0.0.1:8787/api/vectorize/queue/status
 
 ### How auto-vectorization works
 
-Once you run the migration (`migrations/001_add_vectorization_tracking.sql`), MySQL triggers automatically add entries to `vectorization_queue` whenever a seller or rental listing is created, updated, or deleted. The worker then processes this queue on demand or via cron.
+Once you run the migration (`migrations/001_add_vectorization_tracking.sql`), MySQL triggers automatically add entries to `vectorization_queue` whenever a seller or rental listing is created, updated, or deleted. The worker then processes this queue on demand or via cron (every 5 minutes).
+
+> **Note:** Auto-triggers are set up for `sellers` and `rental_owners` only.
+> `buyers`, `tenants`, and `agents` are re-vectorized by running full vectorization manually after bulk data changes.
 
 ---
 
 ## 8. RAG Search
 
-### POST /search — Natural language property search
+### POST /search — Natural language search across all tables
 
 This is the main endpoint. It:
 1. Embeds your query with BGE Large EN
-2. Searches the Vectorize index for similar properties
-3. Fetches full property details from MySQL
-4. Generates an AI answer with Llama 3.1 8B
+2. Searches the Vectorize index across **all 5 tables** (sellers, rental_owners, buyers, tenants, agents)
+3. Detects listing intent (rent vs sale) and filters results accordingly
+4. Fetches full details from MySQL
+5. Generates an AI answer with Llama 3.1 8B
 
 ```bash
 curl -X POST http://127.0.0.1:8787/search \
   -H "Content-Type: application/json" \
   -d '{"query": "house in Pokhara under 2 crore"}'
 ```
+
+---
+
+### Property for Sale queries
 
 **English:**
 ```json
@@ -470,13 +493,77 @@ curl -X POST http://127.0.0.1:8787/search \
 { "query": "Pokhara ma ghar khojdai chu, budget 1.5 crore NPR cha" }
 ```
 
-**More examples:**
+**More sale examples:**
 ```json
 { "query": "land near Pokhara lake with road access" }
-{ "query": "flat for rent in Kathmandu under 15000 per month" }
 { "query": "commercial property Kaski district" }
 { "query": "agricultural land Terai area 2 bigha" }
 { "query": "hotel property for sale in Pokhara tourist area" }
+```
+
+---
+
+### Rental property queries
+
+The system detects rental intent from keywords like `rent`, `bhadama`, `kiraya`, `monthly`, `per month` and returns only rental listings.
+
+```json
+{ "query": "flat for rent in Kathmandu under 15000 per month" }
+{ "query": "2 bedroom apartment bhadama Pokhara" }
+{ "query": "office space for rent Lalitpur" }
+{ "query": "room kiraya Thamel area" }
+{ "query": "house bhadama in Kaski 3BHK" }
+```
+
+---
+
+### Buyer queries
+
+Find people who are actively looking to buy a property:
+
+```json
+{ "query": "buyers looking for land in Pokhara with budget 1 crore" }
+{ "query": "who wants to buy a house in Kaski district" }
+{ "query": "buyer looking for commercial property in Kathmandu" }
+{ "query": "ghar kinna khojne manche Pokhara ma" }
+```
+
+---
+
+### Tenant queries
+
+Find people who are looking to rent:
+
+```json
+{ "query": "tenants seeking 2BHK flat in Kathmandu under 15000 per month" }
+{ "query": "who is looking to rent in Pokhara" }
+{ "query": "tenant looking for office space bhadama" }
+{ "query": "bhadama khojne manche Lalitpur ma" }
+```
+
+---
+
+### Agent queries
+
+Find real estate agents by area or specialty:
+
+```json
+{ "query": "agents working in Kaski district" }
+{ "query": "real estate agent in Pokhara" }
+{ "query": "Gandaki Pradesh ko agent" }
+{ "query": "agent for residential property in Kathmandu" }
+```
+
+---
+
+### Mixed / general queries
+
+These return relevant results from whichever tables match:
+
+```json
+{ "query": "who is interested in agricultural land in Chitwan" }
+{ "query": "show me everything available in Pokhara-17" }
+{ "query": "3 storey house Damside" }
 ```
 
 ### Response format
@@ -512,6 +599,16 @@ curl -X POST http://127.0.0.1:8787/search \
   "total_results": 5
 }
 ```
+
+The `source_table` field tells you which entity type was returned:
+
+| `source_table` | `listing_type` | Key fields |
+|---------------|---------------|-----------|
+| `sellers` | `Sale` | price, area, layout, property_type |
+| `rental_owners` | `Rent` | price (monthly rent), bedroom, layout |
+| `buyers` | `Buyer` | budget_min, budget_max, property_type sought |
+| `tenants` | `Tenant` | price (rent budget), bedrooms_needed |
+| `agents` | `Agent` | name, working_area, phone, email |
 
 ---
 
@@ -637,10 +734,25 @@ The vector index may have stale or no data. Check:
 # Start dev server
 npx wrangler dev --remote --port 8787
 
-# Test RAG search
+# Search for a property for sale
 curl -X POST http://127.0.0.1:8787/search \
   -H "Content-Type: application/json" \
   -d '{"query": "house in Pokhara under 2 crore"}'
+
+# Search for a rental
+curl -X POST http://127.0.0.1:8787/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "2BHK flat bhadama Kathmandu under 15000"}'
+
+# Find buyers looking to purchase in an area
+curl -X POST http://127.0.0.1:8787/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "buyers looking for land in Pokhara budget 1 crore"}'
+
+# Find agents in a district
+curl -X POST http://127.0.0.1:8787/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "real estate agents working in Kaski"}'
 
 # List all properties
 curl http://127.0.0.1:8787/api/properties?type=all
@@ -653,7 +765,7 @@ curl -X POST http://127.0.0.1:8787/api/query \
 # Full schema inspection
 curl http://127.0.0.1:8787/api/db-schema?format=text
 
-# Start vectorization
+# Start full vectorization (all 5 tables: sellers, rental_owners, buyers, tenants, agents)
 curl -X POST http://127.0.0.1:8787/api/vectorize/full \
   -H "Content-Type: application/json" \
   -d '{"mode": "full"}'

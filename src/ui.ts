@@ -218,14 +218,23 @@ export const html = `
                 const val = v => (v !== null && v !== undefined && v !== '' && v !== 'null') ? v : null;
 
                 listings.innerHTML = data.properties.map(p => {
-                    const details = [
+                    const isPerson = ['Buyer','Tenant','Agent'].includes(p.listing_type);
+
+                    // Property card fields
+                    const details = isPerson ? [
+                        val(p.listing_type) ? p.listing_type.toUpperCase() : null,
+                        val(p.property_type) ? p.property_type.toUpperCase() : null,
+                        val(p.bedrooms) ? p.bedrooms + ' BEDS NEEDED' : null,
+                    ].filter(Boolean) : [
                         val(p.bedrooms) ? p.bedrooms + ' BEDS' : null,
                         val(p.layout) && !val(p.bedrooms) ? p.layout : null,
                         val(p.listing_type) ? p.listing_type.toUpperCase() : null,
                         val(p.property_type) ? p.property_type.toUpperCase() : null,
                     ].filter(Boolean);
 
-                    const meta = [
+                    const meta = isPerson ? [
+                        val(p.phone) ? 'Contact: ' + p.phone : null,
+                    ].filter(Boolean) : [
                         val(p.area),
                         val(p.facing),
                         val(p.road_access),
@@ -234,6 +243,8 @@ export const html = `
                     ].filter(Boolean);
 
                     const location = val(p.location) || val(p.district) || 'Nepal';
+                    const priceLabel = p.listing_type === 'Buyer' ? 'Budget' : p.listing_type === 'Tenant' ? 'Rent Budget' : null;
+                    const priceDisplay = val(p.price) || (isPerson ? 'Flexible' : 'Price on request');
 
                     return \`
                     <div class="property-card">
@@ -241,7 +252,7 @@ export const html = `
                             <h3 class="card-title">\${p.title}</h3>
                             <span class="score">\${Math.round(p.similarity * 100)}% MATCH</span>
                         </div>
-                        <div class="card-price">\${val(p.price) || 'Price on request'}</div>
+                        <div class="card-price">\${priceLabel ? priceLabel + ': ' : ''}\${priceDisplay}</div>
                         \${details.length ? \`<div class="card-details">\${details.map(d => \`<span>\${d}</span>\`).join('')}</div>\` : ''}
                         \${meta.length ? \`<div class="card-details" style="font-weight:normal;color:#555;">\${meta.map(m => \`<span>\${m}</span>\`).join('')}</div>\` : ''}
                         <div class="card-location">\${location}</div>

@@ -1,6 +1,7 @@
 // src/vectorize.ts
 // Vectorization engine for the sorha-aana real estate database
 // Works with actual tables: sellers, rental_owners + location lookups
+/// <reference types="@cloudflare/workers-types" />
 import { queryAll, queryOne, queryExecute } from './db-utils';
 
 export interface Env {
@@ -298,6 +299,170 @@ export function createRentalChunks(rental: any): Array<{
   return chunks;
 }
 
+// -- Buyer chunks --
+
+const BUYERS_BASE_QUERY = `
+  SELECT b.*,
+         d.name as district_name,
+         m.name as municipality_name,
+         p.name as province_name,
+         c.name as customer_name, c.phone as customer_phone
+  FROM buyers b
+  LEFT JOIN districts d ON b.district_id = d.id
+  LEFT JOIN municipalities m ON b.municipal_id = m.id
+  LEFT JOIN provinces p ON b.province_id = p.id
+  LEFT JOIN customers c ON b.customer_id = c.id
+`;
+
+export function createBuyerChunks(buyer: any): Array<{ id: string; text: string; type: string; metadata: any }> {
+  const id = buyer.id;
+  const name = buyer.customer_name || `Buyer #${id}`;
+  const location = [
+    buyer.seeking_address || buyer.address,
+    buyer.city,
+    buyer.municipality_name,
+    buyer.district_name
+  ].filter(Boolean).join(', ') || 'Location flexible';
+
+  const budgetMin = buyer.minimum_budget ? formatPrice(buyer.minimum_budget, buyer.minimum_budget_unit) : null;
+  const budgetMax = buyer.maximum_budget ? formatPrice(buyer.maximum_budget, buyer.maximum_budget_unit) : null;
+  const budget = budgetMin && budgetMax ? `${budgetMin} - ${budgetMax}`
+    : budgetMax ? `Up to ${budgetMax}` : budgetMin ? `From ${budgetMin}` : 'Budget flexible';
+
+  const propType = buyer.property_type ? formatEnum(buyer.property_type) : null;
+
+  const mainParts = [
+    `Buyer: ${name}`,
+    `Looking To: Purchase property`,
+    propType ? `Interested In: ${propType}` : null,
+    `Preferred Location: ${location}`,
+    `Budget: ${budget}`,
+    buyer.remarks ? `Notes: ${String(buyer.remarks).substring(0, 300)}` : null,
+    buyer.customer_phone ? `Contact: ${buyer.customer_phone}` : null
+  ].filter(Boolean);
+
+  const keywords = [
+    'buyer', 'looking to buy', 'property buyer', 'purchase',
+    name, propType, location, budget,
+    buyer.district_name, buyer.municipality_name
+  ].filter(Boolean).join(' ');
+
+  return [
+    {
+      id: `buyer_${id}_main`,
+      text: mainParts.join(' | ').substring(0, 2000),
+      type: 'main',
+      metadata: { source_table: 'buyers', source_id: id, entity_type: 'buyer', district: buyer.district_name || null, municipality: buyer.municipality_name || null }
+    },
+    {
+      id: `buyer_${id}_keywords`,
+      text: keywords.substring(0, 2000),
+      type: 'search',
+      metadata: { source_table: 'buyers', source_id: id, entity_type: 'buyer' }
+    }
+  ];
+}
+
+// -- Tenant chunks --
+
+const TENANTS_BASE_QUERY = `
+  SELECT t.*,
+         d.name as district_name,
+         m.name as municipality_name,
+         p.name as province_name,
+         c.name as customer_name, c.phone as customer_phone
+  FROM tenants t
+  LEFT JOIN districts d ON t.district_id = d.id
+  LEFT JOIN municipalities m ON t.municipal_id = m.id
+  LEFT JOIN provinces p ON t.province_id = p.id
+  LEFT JOIN customers c ON t.customer_id = c.id
+`;
+
+export function createTenantChunks(tenant: any): Array<{ id: string; text: string; type: string; metadata: any }> {
+  const id = tenant.id;
+  const name = tenant.customer_name || `Tenant #${id}`;
+  const location = [
+    tenant.seeking_address || tenant.address,
+    tenant.city,
+    tenant.municipality_name,
+    tenant.district_name
+  ].filter(Boolean).join(', ') || 'Location flexible';
+
+  const rentMin = tenant.minimum_rent || tenant.min_rent;
+  const rentMax = tenant.maximum_rent || tenant.max_rent;
+  const budget = rentMax ? `Up to NPR ${Number(rentMax).toLocaleString()}/month`
+    : rentMin ? `From NPR ${Number(rentMin).toLocaleString()}/month` : 'Rent flexible';
+
+  const mainParts = [
+    `Tenant: ${name}`,
+    `Looking To: Rent property`,
+    `Preferred Location: ${location}`,
+    `Rent Budget: ${budget}`,
+    tenant.bedroom ? `Bedrooms Needed: ${tenant.bedroom}` : null,
+    tenant.property_type ? `Property Type: ${formatEnum(tenant.property_type)}` : null,
+    tenant.remarks ? `Notes: ${String(tenant.remarks).substring(0, 300)}` : null,
+    tenant.customer_phone ? `Contact: ${tenant.customer_phone}` : null
+  ].filter(Boolean);
+
+  const keywords = [
+    'tenant', 'looking to rent', 'renter', 'rental seeker',
+    name, location, budget,
+    tenant.district_name, tenant.municipality_name,
+    tenant.bedroom ? `${tenant.bedroom} bedroom` : null
+  ].filter(Boolean).join(' ');
+
+  return [
+    {
+      id: `tenant_${id}_main`,
+      text: mainParts.join(' | ').substring(0, 2000),
+      type: 'main',
+      metadata: { source_table: 'tenants', source_id: id, entity_type: 'tenant', district: tenant.district_name || null, municipality: tenant.municipality_name || null }
+    },
+    {
+      id: `tenant_${id}_keywords`,
+      text: keywords.substring(0, 2000),
+      type: 'search',
+      metadata: { source_table: 'tenants', source_id: id, entity_type: 'tenant' }
+    }
+  ];
+}
+
+// -- Agent chunks --
+
+export function createAgentChunks(agent: any): Array<{ id: string; text: string; type: string; metadata: any }> {
+  const id = agent.id;
+  const name = agent.name || `Agent #${id}`;
+
+  const mainParts = [
+    `Real Estate Agent: ${name}`,
+    agent.working_area ? `Working Area: ${agent.working_area}` : null,
+    agent.address ? `Address: ${agent.address}` : null,
+    agent.phone ? `Phone: ${agent.phone}` : null,
+    agent.email ? `Email: ${agent.email}` : null,
+    agent.remarks ? `Notes: ${String(agent.remarks).substring(0, 300)}` : null
+  ].filter(Boolean);
+
+  const keywords = [
+    'agent', 'real estate agent', 'property agent', 'broker',
+    name, agent.working_area, agent.address
+  ].filter(Boolean).join(' ');
+
+  return [
+    {
+      id: `agent_${id}_main`,
+      text: mainParts.join(' | ').substring(0, 2000),
+      type: 'main',
+      metadata: { source_table: 'agents', source_id: id, entity_type: 'agent', working_area: agent.working_area || null }
+    },
+    {
+      id: `agent_${id}_keywords`,
+      text: keywords.substring(0, 2000),
+      type: 'search',
+      metadata: { source_table: 'agents', source_id: id, entity_type: 'agent' }
+    }
+  ];
+}
+
 // -- Embedding --
 
 export async function generateEmbedding(text: string, env: Env): Promise<number[]> {
@@ -376,13 +541,64 @@ export async function vectorizeProperties(env: Env, incrementalOnly: boolean = t
       } else throw e;
     }
 
-    const totalItems = sellers.length + rentals.length;
+    // ── Buyers ──
+    let buyers: any[] = [];
+    try {
+      const buyerQ = BUYERS_BASE_QUERY + (incrementalOnly
+        ? ` WHERE (b.is_vectorized_complete IS NULL OR b.is_vectorized_complete = FALSE) ORDER BY b.id ASC`
+        : ` ORDER BY b.id ASC`);
+      const res = await queryAll<any>(env, buyerQ);
+      buyers = res.results || [];
+    } catch (e: any) {
+      if (e.message?.includes('Unknown column') || e.message?.includes("doesn't exist")) {
+        try {
+          const res = await queryAll<any>(env, BUYERS_BASE_QUERY + ` ORDER BY b.id ASC`);
+          buyers = res.results || [];
+        } catch { console.warn('buyers table not accessible, skipping'); }
+      } else { console.warn('buyers error:', e.message); }
+    }
+
+    // ── Tenants ──
+    let tenants: any[] = [];
+    try {
+      const tenantQ = TENANTS_BASE_QUERY + (incrementalOnly
+        ? ` WHERE (t.is_vectorized_complete IS NULL OR t.is_vectorized_complete = FALSE) ORDER BY t.id ASC`
+        : ` ORDER BY t.id ASC`);
+      const res = await queryAll<any>(env, tenantQ);
+      tenants = res.results || [];
+    } catch (e: any) {
+      if (e.message?.includes('Unknown column') || e.message?.includes("doesn't exist")) {
+        try {
+          const res = await queryAll<any>(env, TENANTS_BASE_QUERY + ` ORDER BY t.id ASC`);
+          tenants = res.results || [];
+        } catch { console.warn('tenants table not accessible, skipping'); }
+      } else { console.warn('tenants error:', e.message); }
+    }
+
+    // ── Agents ──
+    let agents: any[] = [];
+    try {
+      const agentQ = incrementalOnly
+        ? `SELECT * FROM agents WHERE (is_vectorized_complete IS NULL OR is_vectorized_complete = FALSE) ORDER BY id ASC`
+        : `SELECT * FROM agents ORDER BY id ASC`;
+      const res = await queryAll<any>(env, agentQ);
+      agents = res.results || [];
+    } catch (e: any) {
+      if (e.message?.includes('Unknown column') || e.message?.includes("doesn't exist")) {
+        try {
+          const res = await queryAll<any>(env, `SELECT * FROM agents ORDER BY id ASC`);
+          agents = res.results || [];
+        } catch { console.warn('agents table not accessible, skipping'); }
+      } else { console.warn('agents error:', e.message); }
+    }
+
+    const totalItems = sellers.length + rentals.length + buyers.length + tenants.length + agents.length;
     if (totalItems === 0) {
-      console.log('No properties need vectorization at this time.');
+      console.log('No records need vectorization at this time.');
       return { success: true, indexed: 0, errors: [], properties_processed: 0, properties_skipped: 0, vectorization_mode: incrementalOnly ? 'incremental' : 'full' };
     }
 
-    console.log(`Found ${sellers.length} sellers + ${rentals.length} rentals to vectorize\n`);
+    console.log(`Found: ${sellers.length} sellers | ${rentals.length} rentals | ${buyers.length} buyers | ${tenants.length} tenants | ${agents.length} agents\n`);
 
     // Process sellers
     await processBatch(sellers, 'sellers', (row: any) => createSellerChunks(row), env, errors, (counts) => {
@@ -393,6 +609,27 @@ export async function vectorizeProperties(env: Env, incrementalOnly: boolean = t
 
     // Process rentals
     await processBatch(rentals, 'rental_owners', (row: any) => createRentalChunks(row), env, errors, (counts) => {
+      indexedCount += counts.indexed;
+      propertiesProcessed += counts.processed;
+      propertiesSkipped += counts.skipped;
+    });
+
+    // Process buyers
+    await processBatch(buyers, 'buyers', (row: any) => createBuyerChunks(row), env, errors, (counts) => {
+      indexedCount += counts.indexed;
+      propertiesProcessed += counts.processed;
+      propertiesSkipped += counts.skipped;
+    });
+
+    // Process tenants
+    await processBatch(tenants, 'tenants', (row: any) => createTenantChunks(row), env, errors, (counts) => {
+      indexedCount += counts.indexed;
+      propertiesProcessed += counts.processed;
+      propertiesSkipped += counts.skipped;
+    });
+
+    // Process agents
+    await processBatch(agents, 'agents', (row: any) => createAgentChunks(row), env, errors, (counts) => {
       indexedCount += counts.indexed;
       propertiesProcessed += counts.processed;
       propertiesSkipped += counts.skipped;

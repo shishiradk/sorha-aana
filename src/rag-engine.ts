@@ -40,7 +40,10 @@ export class RealEstateRAG {
     // Group matches by source table and ID (deduplicate main + keyword chunks)
     const sellerIds: number[] = [];
     const rentalIds: number[] = [];
-    const scoreMap = new Map<string, number>(); // "sellers_123" -> best score
+    const buyerIds: number[] = [];
+    const tenantIds: number[] = [];
+    const agentIds: number[] = [];
+    const scoreMap = new Map<string, number>();
 
     for (const match of vectorResults.matches) {
       const meta = match.metadata || {} as any;
@@ -48,7 +51,7 @@ export class RealEstateRAG {
       const id = meta.source_id;
       if (!id) continue;
 
-      // If intent is specified, skip vectors from the wrong table entirely
+      // If listing intent is specified, only include property listing tables
       if (intent === 'rent' && table !== 'rental_owners') continue;
       if (intent === 'sale' && table !== 'sellers') continue;
 
@@ -58,6 +61,9 @@ export class RealEstateRAG {
 
       if (table === 'sellers' && !sellerIds.includes(id)) sellerIds.push(id);
       if (table === 'rental_owners' && !rentalIds.includes(id)) rentalIds.push(id);
+      if (table === 'buyers' && !buyerIds.includes(id)) buyerIds.push(id);
+      if (table === 'tenants' && !tenantIds.includes(id)) tenantIds.push(id);
+      if (table === 'agents' && !agentIds.includes(id)) agentIds.push(id);
     }
 
     // Limit to top 10 unique properties
@@ -180,6 +186,93 @@ export class RealEstateRAG {
       }
     }
 
+    // Fetch buyers
+    if (buyerIds.length > 0) {
+      const ids = buyerIds.slice(0, 10);
+      const placeholders = ids.map(() => '?').join(',');
+      try {
+        const { results: rows } = await queryAll(this.env,
+          `SELECT b.*, d.name as district_name, m.name as municipality_name,
+                  c.name as customer_name, c.phone as customer_phone
+           FROM buyers b
+           LEFT JOIN districts d ON b.district_id = d.id
+           LEFT JOIN municipalities m ON b.municipal_id = m.id
+           LEFT JOIN customers c ON b.customer_id = c.id
+           WHERE b.id IN (${placeholders})`, ids);
+        for (const row of rows) {
+          const budgetMax = row.maximum_budget ? formatPrice(row.maximum_budget, row.maximum_budget_unit) : null;
+          const budgetMin = row.minimum_budget ? formatPrice(row.minimum_budget, row.minimum_budget_unit) : null;
+          results.push({
+            id: row.id, source_table: 'buyers', listing_type: 'Buyer',
+            title: `Buyer: ${row.customer_name || 'Anonymous'} looking in ${row.district_name || 'Nepal'}`,
+            entity_type: 'buyer',
+            name: row.customer_name || null,
+            phone: row.customer_phone || null,
+            location: [row.seeking_address, row.municipality_name, row.district_name].filter(Boolean).join(', ') || 'Flexible',
+            district: row.district_name || null,
+            price: budgetMax ? `Up to ${budgetMax}` : budgetMin ? `From ${budgetMin}` : 'Flexible',
+            property_type: formatEnum(row.property_type) || null,
+            similarity: scoreMap.get(`buyers_${row.id}`) || 0,
+          });
+        }
+      } catch { /* buyers table may not exist */ }
+    }
+
+    // Fetch tenants
+    if (tenantIds.length > 0) {
+      const ids = tenantIds.slice(0, 10);
+      const placeholders = ids.map(() => '?').join(',');
+      try {
+        const { results: rows } = await queryAll(this.env,
+          `SELECT t.*, d.name as district_name, m.name as municipality_name,
+                  c.name as customer_name, c.phone as customer_phone
+           FROM tenants t
+           LEFT JOIN districts d ON t.district_id = d.id
+           LEFT JOIN municipalities m ON t.municipal_id = m.id
+           LEFT JOIN customers c ON t.customer_id = c.id
+           WHERE t.id IN (${placeholders})`, ids);
+        for (const row of rows) {
+          const rentMax = row.maximum_rent || row.max_rent;
+          results.push({
+            id: row.id, source_table: 'tenants', listing_type: 'Tenant',
+            title: `Tenant: ${row.customer_name || 'Anonymous'} seeking rental in ${row.district_name || 'Nepal'}`,
+            entity_type: 'tenant',
+            name: row.customer_name || null,
+            phone: row.customer_phone || null,
+            location: [row.seeking_address, row.municipality_name, row.district_name].filter(Boolean).join(', ') || 'Flexible',
+            district: row.district_name || null,
+            price: rentMax ? `Up to NPR ${Number(rentMax).toLocaleString()}/month` : 'Flexible',
+            bedrooms: row.bedroom || null,
+            property_type: formatEnum(row.property_type) || null,
+            similarity: scoreMap.get(`tenants_${row.id}`) || 0,
+          });
+        }
+      } catch { /* tenants table may not exist */ }
+    }
+
+    // Fetch agents
+    if (agentIds.length > 0) {
+      const ids = agentIds.slice(0, 10);
+      const placeholders = ids.map(() => '?').join(',');
+      try {
+        const { results: rows } = await queryAll(this.env,
+          `SELECT * FROM agents WHERE id IN (${placeholders})`, ids);
+        for (const row of rows) {
+          results.push({
+            id: row.id, source_table: 'agents', listing_type: 'Agent',
+            title: `Agent: ${row.name || 'Unknown'} — ${row.working_area || 'Nepal'}`,
+            entity_type: 'agent',
+            name: row.name || null,
+            phone: row.phone || null,
+            location: row.working_area || row.address || null,
+            district: null,
+            price: null,
+            similarity: scoreMap.get(`agents_${row.id}`) || 0,
+          });
+        }
+      } catch { /* agents table may not exist */ }
+    }
+
     // Sort by similarity score
     return results.sort((a, b) => b.similarity - a.similarity);
   }
@@ -194,16 +287,17 @@ export class RealEstateRAG {
     const context = properties.slice(0, 5).map((p, i) => {
       const parts = [
         `${i + 1}. ${p.title}`,
-        `   Location: ${p.location}`,
-        `   ${p.listing_type === 'Rent' ? 'Rent' : 'Price'}: ${p.price}`,
+        p.location ? `   Location: ${p.location}` : null,
+        p.price ? `   ${p.listing_type === 'Rent' ? 'Rent' : p.listing_type === 'Buyer' ? 'Budget' : p.listing_type === 'Tenant' ? 'Rent Budget' : 'Price'}: ${p.price}` : null,
         p.area ? `   Area: ${p.area}` : null,
         p.layout ? `   Layout: ${p.layout}` : null,
         p.bedrooms ? `   Bedrooms: ${p.bedrooms}` : null,
         p.house_storey ? `   Storeys: ${p.house_storey}` : null,
-        `   Type: ${p.property_type} (${p.property_category})`,
+        p.property_type ? `   Type: ${p.property_type}${p.property_category ? ` (${p.property_category})` : ''}` : null,
         p.facing ? `   Facing: ${p.facing}` : null,
         p.road_access ? `   Road: ${p.road_access}` : null,
         p.furnished ? `   Furnished: ${p.furnished}` : null,
+        p.phone ? `   Contact: ${p.phone}` : null,
         p.amenities?.length ? `   Amenities: ${p.amenities.join(', ')}` : null
       ].filter(Boolean);
       return parts.join('\n');
