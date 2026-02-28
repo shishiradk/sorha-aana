@@ -3,6 +3,7 @@
 
 import { queryAll, queryOne, queryExecute } from './db-utils';
 import { vectorizeProperties, vectorizeSingleProperty } from './vectorize';
+import { geocodeLocation } from './geocoding';
 
 export interface Env {
   HYPERDRIVE: any;
@@ -87,11 +88,40 @@ export async function processVectorizationQueue(env: Env, maxJobs: number = 50):
               successCount++;
               console.log(`  ✓ Successfully vectorized property (${result.vectors_indexed} vectors)`);
 
+              // Auto-geocode the property if it has no coordinates yet
+              try {
+                const table = job.source_table;
+                const addressCol = table === 'rental_owners' ? 'address' : 'property_address';
+                const prop = await queryOne(env,
+                  `SELECT p.${addressCol} as addr, d.name as district_name, m.name as municipality_name, p.latitude
+                   FROM ${table} p
+                   LEFT JOIN districts d ON p.district_id = d.id
+                   LEFT JOIN municipalities m ON p.municipal_id = m.id
+                   WHERE p.id = ?`,
+                  [job.property_id]
+                );
+                if (prop && prop.latitude == null) {
+                  const addrStr = [prop.addr, prop.municipality_name, prop.district_name].filter(Boolean).join(', ');
+                  if (addrStr) {
+                    const coords = await geocodeLocation(addrStr);
+                    if (coords) {
+                      await queryExecute(env,
+                        `UPDATE ${table} SET latitude = ?, longitude = ? WHERE id = ?`,
+                        [coords.lat, coords.lng, job.property_id]
+                      );
+                      console.log(`  ✓ Geocoded to ${coords.lat}, ${coords.lng}`);
+                    }
+                  }
+                }
+              } catch (geoErr: any) {
+                console.warn(`  ⚠ Geocoding skipped: ${geoErr.message}`);
+              }
+
               // Mark job as completed
               await queryExecute(
                 env,
-                `UPDATE vectorization_queue 
-                 SET status = 'completed', processed_at = NOW() 
+                `UPDATE vectorization_queue
+                 SET status = 'completed', processed_at = NOW()
                  WHERE id = ?`,
                 [job.id]
               );

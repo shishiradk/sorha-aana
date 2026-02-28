@@ -1,8 +1,10 @@
 // src/rag-engine.ts
 // RAG engine: vector search -> DB fetch -> AI answer generation
 // Works with actual tables: sellers + rental_owners with location JOINs
+// Supports proximity search via Nominatim geocoding + haversine distance
 import { queryAll } from './db-utils';
 import { formatPrice, priceToNPR } from './vectorize';
+import { geocodeLocation, extractLocationFromQuery, haversineKm, haversineSQL } from './geocoding';
 
 export interface Env {
   HYPERDRIVE: any;
@@ -27,6 +29,70 @@ export class RealEstateRAG {
   async searchProperties(query: string, intent?: 'sale' | 'rent' | null): Promise<any[]> {
     console.log(`Searching: "${query}" [intent: ${intent || 'any'}]`);
 
+    // Detect location intent and geocode
+    const locationPhrase = extractLocationFromQuery(query);
+    let searchCoords: { lat: number; lng: number } | null = null;
+    if (locationPhrase) {
+      console.log(`Location detected: "${locationPhrase}" — geocoding...`);
+      searchCoords = await geocodeLocation(locationPhrase);
+      if (searchCoords) {
+        console.log(`Geocoded to: ${searchCoords.lat}, ${searchCoords.lng}`);
+      } else {
+        console.log('Geocoding failed — falling back to semantic-only search');
+      }
+    }
+
+    // If we have coordinates, also get nearby property IDs from DB
+    let nearbySellerIds: number[] = [];
+    let nearbyRentalIds: number[] = [];
+    const nearbyDistances = new Map<string, number>(); // key -> distance in km
+
+    if (searchCoords) {
+      const radiusKm = 5; // 5km radius
+      const { lat, lng } = searchCoords;
+      const distExpr = haversineSQL('latitude', 'longitude');
+
+      // Query nearby sellers
+      if (intent !== 'rent') {
+        try {
+          const { results: nearby } = await queryAll(this.env,
+            `SELECT id, ${distExpr} as distance_km
+             FROM sellers
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+             AND ${distExpr} < ?
+             ORDER BY distance_km ASC
+             LIMIT 20`,
+            [lat, lng, lat, lat, lng, lat, radiusKm]
+          );
+          nearbySellerIds = nearby.map((r: any) => r.id);
+          nearby.forEach((r: any) => nearbyDistances.set(`sellers_${r.id}`, r.distance_km));
+          console.log(`Found ${nearbySellerIds.length} sellers within ${radiusKm}km`);
+        } catch (err: any) {
+          console.warn('Nearby seller query failed:', err.message);
+        }
+      }
+
+      // Query nearby rentals
+      if (intent !== 'sale') {
+        try {
+          const { results: nearby } = await queryAll(this.env,
+            `SELECT id, ${distExpr} as distance_km
+             FROM rental_owners
+             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+             AND ${distExpr} < ?
+             ORDER BY distance_km ASC
+             LIMIT 20`,
+            [lat, lng, lat, lat, lng, lat, radiusKm]
+          );
+          nearbyRentalIds = nearby.map((r: any) => r.id);
+          nearby.forEach((r: any) => nearbyDistances.set(`rental_owners_${r.id}`, r.distance_km));
+          console.log(`Found ${nearbyRentalIds.length} rentals within ${radiusKm}km`);
+        } catch (err: any) {
+          console.warn('Nearby rental query failed:', err.message);
+        }
+      }
+    }
+
     const queryEmbedding = await this.generateQueryEmbedding(query);
 
     const vectorResults = await this.env.VECTORIZE.query(queryEmbedding, {
@@ -35,7 +101,7 @@ export class RealEstateRAG {
     });
 
     console.log(`Vector search returned ${vectorResults.matches.length} matches`);
-    if (vectorResults.matches.length === 0) return [];
+    if (vectorResults.matches.length === 0 && nearbySellerIds.length === 0 && nearbyRentalIds.length === 0) return [];
 
     // Group matches by source table and ID (deduplicate main + keyword chunks)
     const sellerIds: number[] = [];
@@ -65,6 +131,21 @@ export class RealEstateRAG {
       if (table === 'tenants' && !tenantIds.includes(id)) tenantIds.push(id);
       if (table === 'agents' && !agentIds.includes(id)) agentIds.push(id);
     }
+
+    // Merge nearby property IDs (from distance search) into the ID lists
+    // These may not appear in vector results but are physically close
+    for (const id of nearbySellerIds) {
+      if (!sellerIds.includes(id)) sellerIds.push(id);
+      const key = `sellers_${id}`;
+      if (!scoreMap.has(key)) scoreMap.set(key, 0.5); // baseline score for proximity-only matches
+    }
+    for (const id of nearbyRentalIds) {
+      if (!rentalIds.includes(id)) rentalIds.push(id);
+      const key = `rental_owners_${id}`;
+      if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
+    }
+
+    const hasProximitySearch = searchCoords !== null;
 
     // Limit to top 10 unique properties
     const results: any[] = [];
@@ -96,6 +177,7 @@ export class RealEstateRAG {
           row.ward_num ? `Ward ${row.ward_num}` : null
         ].filter(Boolean).join(', ');
 
+        const distKm = nearbyDistances.get(`sellers_${row.id}`);
         results.push({
           id: row.id,
           source_table: 'sellers',
@@ -125,6 +207,7 @@ export class RealEstateRAG {
           remarks: row.property_remarks || null,
           status: row.status,
           similarity: scoreMap.get(`sellers_${row.id}`) || 0,
+          distance_km: distKm != null ? Math.round(distKm * 100) / 100 : null,
         });
       }
     }
@@ -155,6 +238,7 @@ export class RealEstateRAG {
           row.ward_num ? `Ward ${row.ward_num}` : null
         ].filter(Boolean).join(', ');
 
+        const distKm = nearbyDistances.get(`rental_owners_${row.id}`);
         results.push({
           id: row.id,
           source_table: 'rental_owners',
@@ -182,6 +266,7 @@ export class RealEstateRAG {
           rental_purpose: row.rental_purpose || null,
           status: row.status,
           similarity: scoreMap.get(`rental_owners_${row.id}`) || 0,
+          distance_km: distKm != null ? Math.round(distKm * 100) / 100 : null,
         });
       }
     }
@@ -273,7 +358,20 @@ export class RealEstateRAG {
       } catch { /* agents table may not exist */ }
     }
 
-    // Sort by similarity score
+    // Sort results
+    if (hasProximitySearch) {
+      // When proximity search is active: prioritize nearby + semantically relevant
+      // Score = 0.4 * similarity + 0.6 * proximity (closer = higher)
+      return results.sort((a, b) => {
+        const aProx = a.distance_km != null ? Math.max(0, 1 - a.distance_km / 5) : 0;
+        const bProx = b.distance_km != null ? Math.max(0, 1 - b.distance_km / 5) : 0;
+        const aScore = 0.4 * a.similarity + 0.6 * aProx;
+        const bScore = 0.4 * b.similarity + 0.6 * bProx;
+        return bScore - aScore;
+      });
+    }
+
+    // Default: sort by similarity score
     return results.sort((a, b) => b.similarity - a.similarity);
   }
 
@@ -297,6 +395,7 @@ export class RealEstateRAG {
         p.facing ? `   Facing: ${p.facing}` : null,
         p.road_access ? `   Road: ${p.road_access}` : null,
         p.furnished ? `   Furnished: ${p.furnished}` : null,
+        p.distance_km != null ? `   Distance: ${p.distance_km} km away` : null,
         p.phone ? `   Contact: ${p.phone}` : null,
         p.amenities?.length ? `   Amenities: ${p.amenities.join(', ')}` : null
       ].filter(Boolean);
