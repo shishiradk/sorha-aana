@@ -1,0 +1,178 @@
+// src/batch-geocode.ts
+// Batch geocoding for properties via Worker (no direct MySQL access needed)
+// Uses Nominatim (OpenStreetMap) — 1 req/sec rate limit
+
+import { geocodeLocation } from './geocoding';
+import { queryAll, queryExecute } from './db-utils';
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+interface GeocodeResult {
+  table: string;
+  id: number;
+  address: string;
+  lat?: number;
+  lng?: number;
+  status: 'success' | 'failed' | 'skipped';
+}
+
+interface BatchResult {
+  processed: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  remaining: { sellers: number; rentals: number };
+  results: GeocodeResult[];
+}
+
+/**
+ * Get count of properties that still need geocoding
+ */
+export async function getGeocodeStatus(env: any): Promise<{
+  sellers: { total: number; geocoded: number; pending: number };
+  rentals: { total: number; geocoded: number; pending: number };
+}> {
+  const [sellerStats] = await Promise.all([
+    queryAll(env, `
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN latitude IS NOT NULL THEN 1 ELSE 0 END) as geocoded,
+        SUM(CASE WHEN latitude IS NULL THEN 1 ELSE 0 END) as pending
+      FROM sellers
+    `),
+  ]);
+
+  const [rentalStats] = await Promise.all([
+    queryAll(env, `
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN latitude IS NOT NULL THEN 1 ELSE 0 END) as geocoded,
+        SUM(CASE WHEN latitude IS NULL THEN 1 ELSE 0 END) as pending
+      FROM rental_owners
+    `),
+  ]);
+
+  const s = sellerStats.results[0] || { total: 0, geocoded: 0, pending: 0 };
+  const r = rentalStats.results[0] || { total: 0, geocoded: 0, pending: 0 };
+
+  return {
+    sellers: { total: Number(s.total), geocoded: Number(s.geocoded), pending: Number(s.pending) },
+    rentals: { total: Number(r.total), geocoded: Number(r.geocoded), pending: Number(r.pending) },
+  };
+}
+
+/**
+ * Process a batch of properties: geocode and update lat/lng
+ * Processes sellers first, then rental_owners
+ * Respects Nominatim 1 req/sec rate limit
+ */
+export async function batchGeocode(env: any, batchSize: number = 20): Promise<BatchResult> {
+  const results: GeocodeResult[] = [];
+  let success = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // Fetch sellers needing geocoding
+  const { results: sellers } = await queryAll(env, `
+    SELECT s.id, s.property_address, s.city,
+           d.name as district_name, m.name as municipality_name
+    FROM sellers s
+    LEFT JOIN districts d ON s.district_id = d.id
+    LEFT JOIN municipalities m ON s.municipal_id = m.id
+    WHERE s.latitude IS NULL
+    ORDER BY s.id
+    LIMIT ?
+  `, [batchSize]);
+
+  for (const row of sellers) {
+    const addressParts = [row.property_address, row.municipality_name, row.district_name].filter(Boolean);
+    const addressStr = addressParts.join(', ');
+
+    if (!addressStr || addressStr.trim() === '') {
+      skipped++;
+      results.push({ table: 'sellers', id: row.id, address: '', status: 'skipped' });
+      continue;
+    }
+
+    try {
+      const coords = await geocodeLocation(addressStr);
+      if (coords) {
+        await queryExecute(env,
+          'UPDATE sellers SET latitude = ?, longitude = ? WHERE id = ?',
+          [coords.lat, coords.lng, row.id]
+        );
+        success++;
+        results.push({ table: 'sellers', id: row.id, address: addressStr, lat: coords.lat, lng: coords.lng, status: 'success' });
+      } else {
+        failed++;
+        results.push({ table: 'sellers', id: row.id, address: addressStr, status: 'failed' });
+      }
+    } catch (err: any) {
+      failed++;
+      results.push({ table: 'sellers', id: row.id, address: addressStr, status: 'failed' });
+    }
+
+    // Nominatim rate limit: 1 req/sec
+    await sleep(1100);
+  }
+
+  // If we still have room in the batch, process rental_owners
+  const remaining = batchSize - sellers.length;
+  if (remaining > 0) {
+    const { results: rentals } = await queryAll(env, `
+      SELECT ro.id, ro.address, ro.city,
+             d.name as district_name, m.name as municipality_name
+      FROM rental_owners ro
+      LEFT JOIN districts d ON ro.district_id = d.id
+      LEFT JOIN municipalities m ON ro.municipal_id = m.id
+      WHERE ro.latitude IS NULL
+      ORDER BY ro.id
+      LIMIT ?
+    `, [remaining]);
+
+    for (const row of rentals) {
+      const addressParts = [row.address, row.municipality_name, row.district_name].filter(Boolean);
+      const addressStr = addressParts.join(', ');
+
+      if (!addressStr || addressStr.trim() === '') {
+        skipped++;
+        results.push({ table: 'rental_owners', id: row.id, address: '', status: 'skipped' });
+        continue;
+      }
+
+      try {
+        const coords = await geocodeLocation(addressStr);
+        if (coords) {
+          await queryExecute(env,
+            'UPDATE rental_owners SET latitude = ?, longitude = ? WHERE id = ?',
+            [coords.lat, coords.lng, row.id]
+          );
+          success++;
+          results.push({ table: 'rental_owners', id: row.id, address: addressStr, lat: coords.lat, lng: coords.lng, status: 'success' });
+        } else {
+          failed++;
+          results.push({ table: 'rental_owners', id: row.id, address: addressStr, status: 'failed' });
+        }
+      } catch (err: any) {
+        failed++;
+        results.push({ table: 'rental_owners', id: row.id, address: addressStr, status: 'failed' });
+      }
+
+      await sleep(1100);
+    }
+  }
+
+  // Get remaining counts
+  const status = await getGeocodeStatus(env);
+
+  return {
+    processed: results.length,
+    success,
+    failed,
+    skipped,
+    remaining: { sellers: status.sellers.pending, rentals: status.rentals.pending },
+    results,
+  };
+}

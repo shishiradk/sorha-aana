@@ -6,6 +6,7 @@ import { openApiSpec, swaggerHtml } from './swagger';
 import { getDatabaseSchema, formatSchemaForConsole, formatSchemaAsJson } from './inspect-db';
 import { queryAll } from './db-utils';
 import { processVectorizationQueue, getQueueStatus } from './vectorization-queue-processor';
+import { batchGeocode, getGeocodeStatus } from './batch-geocode';
 
 export interface Env {
   HYPERDRIVE: any; // Hyperdrive MySQL connection
@@ -199,6 +200,39 @@ export default {
 
 
 
+      // Batch geocoding endpoints
+      if (path === '/api/geocode/batch' && request.method === 'POST') {
+        try {
+          const body = await request.json() as any;
+          const batchSize = Math.min(body.batch_size || 20, 25); // Max 25 per call (Nominatim rate limit)
+
+          const result = await batchGeocode(env, batchSize);
+          return Response.json(result, { headers: corsHeaders });
+        } catch (error: any) {
+          return Response.json(
+            { error: error.message },
+            { status: 500, headers: corsHeaders }
+          );
+        }
+      }
+
+      if (path === '/api/geocode/status' && request.method === 'GET') {
+        try {
+          const status = await getGeocodeStatus(env);
+          return Response.json({
+            ...status,
+            total_pending: status.sellers.pending + status.rentals.pending,
+            total_geocoded: status.sellers.geocoded + status.rentals.geocoded,
+            timestamp: new Date().toISOString()
+          }, { headers: corsHeaders });
+        } catch (error: any) {
+          return Response.json(
+            { error: error.message },
+            { status: 500, headers: corsHeaders }
+          );
+        }
+      }
+
       // Database schema inspection endpoints
       if (path === '/api/db-schema' && request.method === 'GET') {
         try {
@@ -263,6 +297,8 @@ export default {
         'GET /api/vectorization-stats - Get full statistics',
         'POST /api/vectorize/queue/process - Process vectorization queue',
         'GET /api/vectorize/queue/status - Get queue status',
+        'POST /api/geocode/batch - Batch geocode properties (body: {"batch_size": 20})',
+        'GET /api/geocode/status - Get geocoding progress',
         'GET /api/db-schema - Get database schema',
         'POST /api/query - Run SQL query',
         'GET /api/properties - List properties',
