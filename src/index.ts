@@ -20,8 +20,9 @@ export interface Env {
 export default {
   // Runs every 5 minutes via Cloudflare Cron Trigger
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Cron: processing vectorization queue...');
-    ctx.waitUntil(processVectorizationQueue(env, 100));
+    console.log('Cron: running incremental vectorization...');
+    // No DB triggers (binary log restriction) — scan directly for unvectorized/updated properties
+    ctx.waitUntil(vectorizeProperties(env, true));
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
