@@ -39,7 +39,6 @@ Sorha Aana (सोह्र आना) is an AI-powered real estate assistant fo
 - Generates a contextual answer using Llama 3.1 8B
 
 **Source files:**
-
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | Main Worker entry point, all route handling |
