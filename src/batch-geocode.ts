@@ -85,7 +85,9 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
   `, [batchSize]);
 
   for (const row of sellers) {
-    const addressParts = [row.property_address, row.municipality_name, row.district_name].filter(Boolean);
+    // Use municipality if available, otherwise fall back to city column
+    const city = row.municipality_name || row.city;
+    const addressParts = [row.property_address, city, row.district_name].filter(Boolean);
     const addressStr = addressParts.join(', ');
 
     if (!addressStr || addressStr.trim() === '') {
@@ -99,7 +101,22 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
     }
 
     try {
-      const coords = await geocodeLocation(addressStr);
+      // Pass 'Nepal' — address already contains district name, so we don't force Kaski context
+      let coords = await geocodeLocation(addressStr, 'Nepal');
+
+      // City-level fallback: if tole name is too vague, try just city + district
+      if (!coords && city) {
+        await sleep(1100);
+        const fallbackParts = [city, row.district_name].filter(Boolean);
+        coords = await geocodeLocation(fallbackParts.join(', '), 'Nepal');
+      }
+
+      // District-level last resort: for rows with no city/municipality
+      if (!coords && row.district_name) {
+        await sleep(1100);
+        coords = await geocodeLocation(row.district_name + ' Nepal', 'Nepal');
+      }
+
       if (coords) {
         await queryExecute(env,
           'UPDATE sellers SET latitude = ?, longitude = ? WHERE id = ?',
@@ -144,7 +161,8 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
     `, [remaining]);
 
     for (const row of rentals) {
-      const addressParts = [row.address, row.municipality_name, row.district_name].filter(Boolean);
+      const city = row.municipality_name || row.city;
+      const addressParts = [row.address, city, row.district_name].filter(Boolean);
       const addressStr = addressParts.join(', ');
 
       if (!addressStr || addressStr.trim() === '') {
@@ -158,7 +176,22 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
       }
 
       try {
-        const coords = await geocodeLocation(addressStr);
+        // Pass 'Nepal' — address already contains district name
+        let coords = await geocodeLocation(addressStr, 'Nepal');
+
+        // City-level fallback
+        if (!coords && city) {
+          await sleep(1100);
+          const fallbackParts = [city, row.district_name].filter(Boolean);
+          coords = await geocodeLocation(fallbackParts.join(', '), 'Nepal');
+        }
+
+        // District-level last resort
+        if (!coords && row.district_name) {
+          await sleep(1100);
+          coords = await geocodeLocation(row.district_name + ' Nepal', 'Nepal');
+        }
+
         if (coords) {
           await queryExecute(env,
             'UPDATE rental_owners SET latitude = ?, longitude = ? WHERE id = ?',

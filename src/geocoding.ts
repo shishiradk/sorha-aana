@@ -5,38 +5,62 @@
 // Kaski district bounding box
 const KASKI_VIEWBOX = '83.70,28.61,84.28,28.08';
 
-/**
- * Geocode a location string using Nominatim (OpenStreetMap)
- * Bounded to Kaski district to avoid wrong results from other districts
- */
-export async function geocodeLocation(
-  locationText: string
-): Promise<{ lat: number; lng: number } | null> {
-  const query = `${locationText} Kaski Nepal`;
+function sleepMs(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function tryNominatim(query: string, params: string): Promise<{ lat: number; lng: number } | null> {
   const url = `https://nominatim.openstreetmap.org/search?` +
-    `q=${encodeURIComponent(query)}` +
-    `&format=json&limit=1` +
-    `&viewbox=${KASKI_VIEWBOX}&bounded=1`;
-
+    `q=${encodeURIComponent(query)}&format=json&limit=1${params}`;
   try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'sorha-aana-worker/1.0' }
-    });
-
+    const res = await fetch(url, { headers: { 'User-Agent': 'sorha-aana-worker/1.0' } });
     if (!res.ok) return null;
-
     const data = await res.json() as any[];
     if (!data || data.length === 0) return null;
-
     const lat = parseFloat(data[0].lat);
     const lng = parseFloat(data[0].lon);
     if (isNaN(lat) || isNaN(lng)) return null;
-
     return { lat, lng };
-  } catch (err) {
-    console.error('Geocoding error:', err);
+  } catch {
     return null;
   }
+}
+
+/**
+ * Geocode a location string using Nominatim (OpenStreetMap)
+ *
+ * appendContext: text appended to the query for disambiguation.
+ *   - Default "Kaski Nepal" — for runtime RAG search (short location names like "Malepatan")
+ *   - Pass "Nepal" for batch geocoding where the address already contains the district name
+ *
+ * Tries 3 tiers of increasing leniency:
+ *   1. Strict Kaski viewbox (bounded=1) — only used when context is "Kaski Nepal"
+ *   2. Kaski viewbox as preference hint (bounded=0) — only for Kaski context
+ *   3. Nepal-wide search
+ */
+export async function geocodeLocation(
+  locationText: string,
+  appendContext: string = 'Kaski Nepal'
+): Promise<{ lat: number; lng: number } | null> {
+  const query = `${locationText} ${appendContext}`;
+  const isKaskiContext = appendContext.toLowerCase().includes('kaski');
+
+  if (isKaskiContext) {
+    // Tier 1: strict Kaski bounding box
+    const r1 = await tryNominatim(query, `&viewbox=${KASKI_VIEWBOX}&bounded=1`);
+    if (r1) return r1;
+
+    await sleepMs(1100);
+
+    // Tier 2: Kaski viewbox as preference (not strict)
+    const r2 = await tryNominatim(query, `&viewbox=${KASKI_VIEWBOX}&bounded=0`);
+    if (r2) return r2;
+
+    await sleepMs(1100);
+  }
+
+  // Tier 3 (or Tier 1 for non-Kaski): Nepal-wide
+  return tryNominatim(query, `&countrycodes=np`);
 }
 
 /**
