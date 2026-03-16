@@ -579,6 +579,69 @@ export class RealEstateRAG {
       return Math.max(0.3, 1 - 0.15 * diff);
     };
 
+    // Parse area string from DB into ropani for comparison
+    const parseAreaToRopani = (areaStr: string | null): number | null => {
+      if (!areaStr) return null;
+      const lower = areaStr.toLowerCase();
+      const units: Record<string, number> = {
+        ropani: 1, aana: 1 / 16, dhur: 1 / 256,
+        bigha: 13.31, kattha: 0.83,
+        'sq ft': 1 / 5476, 'sq m': 1 / 508.74, 'sqm': 1 / 508.74,
+      };
+      for (const [unit, mult] of Object.entries(units)) {
+        const m = lower.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*${unit}`));
+        if (m) return parseFloat(m[1]) * mult;
+      }
+      return null;
+    };
+
+    const areaScore = (p: any): number => {
+      if (!parsed?.minArea && !parsed?.maxArea) return 1;
+      const area = parseAreaToRopani(p.area);
+      if (!area) return 0.6;
+      if (parsed.minArea && area < parsed.minArea) return 0.3;
+      if (parsed.maxArea && area > parsed.maxArea) return 0.3;
+      return 1;
+    };
+
+    const storeyScore = (p: any): number => {
+      if (!parsed?.storeys) return 1;
+      const s = parseFloat(p.house_storey);
+      if (!s) return 0.7;
+      const diff = Math.abs(s - parsed.storeys);
+      return Math.max(0.3, 1 - 0.2 * diff);
+    };
+
+    const facingScore = (p: any): number => {
+      if (!parsed?.facing) return 1;
+      if (!p.facing) return 0.7;
+      return p.facing.toLowerCase() === parsed.facing ? 1 : 0.3;
+    };
+
+    const furnishedScore = (p: any): number => {
+      if (parsed?.furnished === null || parsed?.furnished === undefined) return 1;
+      if (!p.furnished) return 0.7;
+      const isFurnished = /yes|furnished|full/i.test(p.furnished);
+      return isFurnished === parsed.furnished ? 1 : 0.3;
+    };
+
+    const roadScore = (p: any): number => {
+      if (!parsed?.roadAccess) return 1;
+      return p.road_access ? 1 : 0.5;
+    };
+
+    const categoryScore = (p: any): number => {
+      if (!parsed?.category) return 1;
+      if (!p.property_category) return 0.7;
+      return p.property_category.toLowerCase().includes(parsed.category) ? 1 : 0.3;
+    };
+
+    // Combined feature score for extra filters
+    const featureScore = (p: any): number => {
+      const scores = [areaScore(p), storeyScore(p), facingScore(p), furnishedScore(p), roadScore(p), categoryScore(p)];
+      return scores.reduce((a, b) => a + b, 0) / scores.length;
+    };
+
     // Exponential proximity decay: sharp boost for very close, gradual drop-off farther
     // Text-matched results (found by address name) get full proximity score even without coordinates
     const proxScore = (p: any): number => {
@@ -602,18 +665,36 @@ export class RealEstateRAG {
       });
     }
 
-    // Sort results
-    if (hasProximitySearch) {
+    // Sort results based on what filters are active
+    const hasPrice = !!(parsed?.minNPR || parsed?.maxNPR);
+    const hasFeatureFilters = !!(parsed?.minArea || parsed?.maxArea || parsed?.storeys || parsed?.facing || parsed?.furnished !== null && parsed?.furnished !== undefined || parsed?.roadAccess || parsed?.category);
+
+    if (hasProximitySearch && (hasPrice || hasFeatureFilters)) {
+      // Location + filters: filters are top priority within location
       results.sort((a, b) => {
-        const aScore = 0.25 * a.similarity + 0.35 * proxScore(a) + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a);
-        const bScore = 0.25 * b.similarity + 0.35 * proxScore(b) + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b);
+        const aScore = 0.1 * a.similarity + 0.2 * proxScore(a) + 0.1 * typeScore(a) + 0.25 * priceScore(a) + 0.1 * bedroomScore(a) + 0.25 * featureScore(a);
+        const bScore = 0.1 * b.similarity + 0.2 * proxScore(b) + 0.1 * typeScore(b) + 0.25 * priceScore(b) + 0.1 * bedroomScore(b) + 0.25 * featureScore(b);
+        return bScore - aScore;
+      });
+    } else if (hasProximitySearch) {
+      // Location only: proximity + similarity
+      results.sort((a, b) => {
+        const aScore = 0.2 * a.similarity + 0.3 * proxScore(a) + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a) + 0.1 * featureScore(a);
+        const bScore = 0.2 * b.similarity + 0.3 * proxScore(b) + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b) + 0.1 * featureScore(b);
+        return bScore - aScore;
+      });
+    } else if (hasPrice || hasFeatureFilters) {
+      // Filters only: filters are top priority
+      results.sort((a, b) => {
+        const aScore = 0.15 * a.similarity + 0.1 * typeScore(a) + 0.3 * priceScore(a) + 0.15 * bedroomScore(a) + 0.3 * featureScore(a);
+        const bScore = 0.15 * b.similarity + 0.1 * typeScore(b) + 0.3 * priceScore(b) + 0.15 * bedroomScore(b) + 0.3 * featureScore(b);
         return bScore - aScore;
       });
     } else {
       // Default: sort by similarity + type + price/bedroom fit
       results.sort((a, b) => {
-        const aScore = 0.6 * a.similarity + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a);
-        const bScore = 0.6 * b.similarity + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b);
+        const aScore = 0.5 * a.similarity + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a) + 0.1 * featureScore(a);
+        const bScore = 0.5 * b.similarity + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b) + 0.1 * featureScore(b);
         return bScore - aScore;
       });
     }
@@ -640,7 +721,12 @@ export class RealEstateRAG {
       return "I couldn't find any properties matching your criteria in our database. Try adjusting your budget, location, or property type.";
     }
 
-    const context = properties.slice(0, 10).map((p, i) => {
+    // Location-only search: show all properties; with filters: show top matches
+    const hasFilters = !!(parsed?.minNPR || parsed?.maxNPR || parsed?.bedrooms || parsed?.minArea || parsed?.maxArea || parsed?.storeys || parsed?.facing || (parsed?.furnished !== null && parsed?.furnished !== undefined) || parsed?.roadAccess || parsed?.category);
+    const locationOnly = !!locationCtx?.locationPhrase && !hasFilters;
+    const contextLimit = locationOnly ? 20 : 10;
+
+    const context = properties.slice(0, contextLimit).map((p, i) => {
       const parts = [
         `${i + 1}. ${p.title}`,
         p.location ? `   Location: ${p.location}` : null,
@@ -670,6 +756,17 @@ export class RealEstateRAG {
     if (parsed?.bedrooms) intentParts.push(`${parsed.bedrooms} bedroom(s)`);
     if (parsed?.maxNPR) intentParts.push(`budget up to NPR ${parsed.maxNPR.toLocaleString()}`);
     if (parsed?.minNPR && !parsed?.maxNPR) intentParts.push(`budget from NPR ${parsed.minNPR.toLocaleString()}`);
+    if (parsed?.minArea || parsed?.maxArea) {
+      if (parsed.minArea && parsed.maxArea) intentParts.push(`area ${parsed.minArea.toFixed(1)}-${parsed.maxArea.toFixed(1)} ropani`);
+      else if (parsed.maxArea) intentParts.push(`area up to ${parsed.maxArea.toFixed(1)} ropani`);
+      else if (parsed.minArea) intentParts.push(`area from ${parsed.minArea.toFixed(1)} ropani`);
+    }
+    if (parsed?.storeys) intentParts.push(`${parsed.storeys} storey(s)`);
+    if (parsed?.facing) intentParts.push(`${parsed.facing}-facing`);
+    if (parsed?.furnished === true) intentParts.push('furnished');
+    if (parsed?.furnished === false) intentParts.push('unfurnished');
+    if (parsed?.roadAccess) intentParts.push('road access required');
+    if (parsed?.category) intentParts.push(`${parsed.category} property`);
     const parsedNote = intentParts.length ? `Parsed user filters: ${intentParts.join(', ')}.` : '';
 
     const prompt = `You are Sorha Aana, a real estate assistant for Kaski district, Nepal.
@@ -684,14 +781,18 @@ ${context}
 INSTRUCTIONS:
 - Use ONLY the property data above. Never invent or assume any details.
 - Reply in English only.
-- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).
+${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties shown above — give a brief summary of each (type, price, area). Do not skip any.
+- Group by property type if there are many (e.g., "Houses:", "Land:", "Rentals:").
+- At the end, mention the total count (e.g., "Found 12 properties in Kaukhola").` : hasFilters && locationCtx?.locationPhrase ? `- The user searched by LOCATION + FILTERS (price/area/bedrooms/features). Prioritize properties that match the filters.
+- Highlight the best filter matches first, then mention others that are in the location but don't match.
+- Clearly state each property's price, area, bedrooms, and other relevant details.` : hasFilters ? `- The user searched with FILTERS (price/area/bedrooms/features). Show properties that best match.
+- Prioritize filter-matched properties. Clearly state relevant details for each.` : `- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).`}
 - If price or bedroom filters were parsed above, explicitly state whether each property fits.
 - If distance data is available, mention how far each property is from the searched location.
 - If a property is within 1 km, note it as "very close".
 - Show prices exactly as listed. Do not convert or estimate.
 - If the user asked for rentals but a property is for sale (or vice versa), mention that clearly.
 - If no properties are a good fit, say so and suggest how to adjust the search.
-- If the user mention the location that is not mentioned in the db then ask answer that the location is not mentioned .
 - Be concise. Do not repeat the same property details twice.
 - Never use emojis.
 - End with a short list: source table and ID for each property mentioned.`;
@@ -831,6 +932,13 @@ export interface ParsedIntent {
   minNPR: number | null;
   maxNPR: number | null;
   bedrooms: number | null;
+  minArea: number | null;       // in ropani (normalized)
+  maxArea: number | null;       // in ropani (normalized)
+  storeys: number | null;
+  facing: string | null;        // north, south, east, west
+  furnished: boolean | null;
+  roadAccess: boolean | null;
+  category: string | null;      // residential, commercial, agriculture
 }
 
 export function extractParsedIntent(query: string): ParsedIntent {
@@ -874,5 +982,67 @@ export function extractParsedIntent(query: string): ParsedIntent {
     }
   }
 
-  return { minNPR, maxNPR, bedrooms };
+  // Area extraction (normalize to ropani: 1 ropani = 5476 sq ft = 508.74 sq m = 16 aana)
+  let minArea: number | null = null;
+  let maxArea: number | null = null;
+  const areaUnits: Record<string, number> = {
+    ropani: 1, 'ropanies': 1,
+    aana: 1 / 16, 'aanas': 1 / 16,
+    dhur: 1 / 256, 'dhurs': 1 / 256,
+    bigha: 13.31, 'bighas': 13.31,
+    kattha: 0.83, 'katthas': 0.83,
+    'sq ft': 1 / 5476, 'sqft': 1 / 5476, 'sq feet': 1 / 5476,
+    'sq m': 1 / 508.74, 'sqm': 1 / 508.74,
+  };
+  const toRopani = (num: string, unit: string): number => parseFloat(num) * (areaUnits[unit.toLowerCase()] ?? 1);
+
+  const areaRange = lower.match(/(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
+  if (areaRange) {
+    minArea = toRopani(areaRange[1], areaRange[2]);
+    maxArea = toRopani(areaRange[3], areaRange[4]);
+  } else {
+    const underArea = lower.match(/(?:under|below|less than|upto|up to|max|within)\s*(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
+    if (underArea) maxArea = toRopani(underArea[1], underArea[2]);
+
+    const overArea = lower.match(/(?:above|over|more than|minimum|min|at least)\s*(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
+    if (overArea) minArea = toRopani(overArea[1], overArea[2]);
+
+    // Plain "5 ropani" without qualifier — treat as approximate target (±30%)
+    if (!minArea && !maxArea) {
+      const plainArea = lower.match(/(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
+      if (plainArea) {
+        const target = toRopani(plainArea[1], plainArea[2]);
+        minArea = target * 0.7;
+        maxArea = target * 1.3;
+      }
+    }
+  }
+
+  // Storeys extraction
+  let storeys: number | null = null;
+  const storeyMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:storey[s]?|story|stories|floor[s]?|tale)/);
+  if (storeyMatch) storeys = parseFloat(storeyMatch[1]);
+
+  // Facing extraction
+  let facing: string | null = null;
+  const facingMatch = lower.match(/(?:facing|face[sd]?)\s*(north|south|east|west)/i) ||
+                      lower.match(/(north|south|east|west)\s*(?:facing|face[sd]?)/i);
+  if (facingMatch) facing = facingMatch[1].toLowerCase();
+
+  // Furnished extraction
+  let furnished: boolean | null = null;
+  if (/\b(?:furnished|furnish)\b/.test(lower) && !/\bunfurnished\b/.test(lower)) furnished = true;
+  if (/\bunfurnished\b/.test(lower)) furnished = false;
+
+  // Road access extraction
+  let roadAccess: boolean | null = null;
+  if (/\b(?:road\s*access|road\s*connected|pitched|black\s*top|gravelled|concrete\s*road)\b/.test(lower)) roadAccess = true;
+
+  // Category extraction
+  let category: string | null = null;
+  if (/\b(?:commercial|business|office)\b/.test(lower)) category = 'commercial';
+  else if (/\b(?:agriculture|farm|farming|agricultural)\b/.test(lower)) category = 'agriculture';
+  else if (/\b(?:residential|home|living)\b/.test(lower)) category = 'residential';
+
+  return { minNPR, maxNPR, bedrooms, minArea, maxArea, storeys, facing, furnished, roadAccess, category };
 }
