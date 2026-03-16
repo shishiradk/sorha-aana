@@ -651,18 +651,29 @@ export class RealEstateRAG {
       return 0;
     };
 
-    // If we have text-matched results for a specific location, filter out
-    // proximity-only results that don't actually match the location name
-    // (prevents "properties in tanahun" from showing random Kaski nearby results)
-    if (locationPhrase && textMatchedIds.size > 0) {
-      results = results.filter(p => {
-        const key = `${p.source_table}_${p.id}`;
-        if (textMatchedIds.has(key)) return true; // text-matched — keep
-        // Keep proximity results only if their address contains the location word
-        const addr = (p.location || '').toLowerCase();
+    // When a location is specified, filter results to only those relevant to that location
+    if (locationPhrase) {
+      if (textMatchedIds.size > 0) {
+        // We have text matches — keep those + proximity results that contain the location word
+        results = results.filter(p => {
+          const key = `${p.source_table}_${p.id}`;
+          if (textMatchedIds.has(key)) return true;
+          const addr = (p.location || '').toLowerCase();
+          const locWords = locationPhrase.toLowerCase().split(/\s+/);
+          return locWords.some(w => w.length >= 3 && addr.includes(w));
+        });
+      } else if (geocodeFailed) {
+        // Location specified but not found anywhere — only keep results whose address contains the location word
+        // (prevents random vector results from showing up for unknown locations)
         const locWords = locationPhrase.toLowerCase().split(/\s+/);
-        return locWords.some(w => w.length >= 3 && addr.includes(w));
-      });
+        results = results.filter(p => {
+          const addr = (p.location || '').toLowerCase();
+          return locWords.some(w => w.length >= 3 && addr.includes(w));
+        });
+      } else if (searchCoords) {
+        // Location geocoded but no text matches — keep only proximity results (within 5km)
+        results = results.filter(p => p.distance_km != null && p.distance_km <= 5);
+      }
     }
 
     // Sort results based on what filters are active
@@ -769,7 +780,7 @@ export class RealEstateRAG {
     if (parsed?.category) intentParts.push(`${parsed.category} property`);
     const parsedNote = intentParts.length ? `Parsed user filters: ${intentParts.join(', ')}.` : '';
 
-    const prompt = `You are Sorha Aana, a real estate assistant for Kaski district, Nepal.
+    const prompt = `You are Sorha Aana, a real estate assistant which help users to find the properties based on their needs.
 
 User query: "${question}"
 ${listingTypeNote}

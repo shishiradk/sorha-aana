@@ -86,8 +86,8 @@ export function extractLocationFromQuery(query: string): string | null {
   const nearEnd = query.match(/(?:near|around|close\s+to|nearby)\s+(.+)$/i);
   if (nearEnd) return cleanLocation(nearEnd[1]);
 
-  // "in X" / "at X" — e.g. "house in chauthe", "property at malepatan"
-  const inMatch = query.match(/\b(?:in|at)\s+([a-zA-Z][a-zA-Z\-]{2,}(?:\s+[a-zA-Z][a-zA-Z\-]+){0,3})(?:\s|$)/i);
+  // "in X" / "at X" / "of X" — e.g. "house in chauthe", "property at malepatan", "properties of kaudhada"
+  const inMatch = query.match(/\b(?:in|at|of)\s+([a-zA-Z][a-zA-Z\-]{2,}(?:\s+[a-zA-Z][a-zA-Z\-]+){0,3})(?:\s|$)/i);
   if (inMatch) {
     const loc = cleanLocation(inMatch[1]);
     if (loc && !stopWords.test(loc)) return loc;
