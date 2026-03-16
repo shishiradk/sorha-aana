@@ -955,26 +955,27 @@ export interface ParsedIntent {
 export function extractParsedIntent(query: string): ParsedIntent {
   const lower = query.toLowerCase();
 
-  // Price range extraction
+  // Price range extraction — supports: lakh/lakhs/lac/l, crore/crores/cr, thousand/k
   const unitMult: Record<string, number> = {
-    lakh: 100000, lakhs: 100000,
-    crore: 10000000, crores: 10000000,
+    lakh: 100000, lakhs: 100000, lac: 100000, lacs: 100000, l: 100000,
+    crore: 10000000, crores: 10000000, cr: 10000000, crs: 10000000,
     thousand: 1000, k: 1000,
   };
+  const priceUnitPattern = 'lakhs?|lacs?|crores?|crs?|thousand|[klL]\\b';
   const toNPR = (num: string, unit: string) => parseFloat(num) * (unitMult[unit.toLowerCase()] ?? 1);
 
   let minNPR: number | null = null;
   let maxNPR: number | null = null;
 
-  const rangeMatch = lower.match(/(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)\s*(?:to|and|-)\s*(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+  const rangeMatch = lower.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})\\s*(?:to|and|-)\\s*(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
   if (rangeMatch) {
     minNPR = toNPR(rangeMatch[1], rangeMatch[2]);
     maxNPR = toNPR(rangeMatch[3], rangeMatch[4]);
   } else {
-    const underMatch = lower.match(/(?:under|below|less than|upto|up to|max|maximum)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+    const underMatch = lower.match(new RegExp(`(?:under|below|less than|upto|up to|max|maximum)\\s*(?:npr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
     if (underMatch) maxNPR = toNPR(underMatch[1], underMatch[2]);
 
-    const overMatch = lower.match(/(?:above|over|more than|minimum|min|at least)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+    const overMatch = lower.match(new RegExp(`(?:above|over|more than|minimum|min|at least)\\s*(?:npr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
     if (overMatch) minNPR = toNPR(overMatch[1], overMatch[2]);
   }
 
