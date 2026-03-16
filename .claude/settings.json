@@ -3,7 +3,19 @@
     "allow": [
       "Bash(npm install mysql2@3.9.7 --save-exact)",
       "Bash(node -e \"const m = require\\(''mysql2''\\); console.log\\(''mysql2 version:'', require\\(''./node_modules/mysql2/package.json''\\).version\\)\")",
-      "WebFetch(domain:developers.cloudflare.com)"
+      "WebFetch(domain:developers.cloudflare.com)",
+      "Bash(npx tsc:*)",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT COUNT\\(*\\) as unvectorized FROM sellers WHERE is_vectorized_complete IS NULL OR is_vectorized_complete = FALSE\"\"}')",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT COUNT\\(*\\) as no_coords FROM sellers WHERE latitude IS NULL AND status = \\\\\"\"ACTIVE\\\\\"\"\"\"}')",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT id, property_address, city, latitude, longitude FROM sellers WHERE LOWER\\(property_address\\) LIKE \\\\\"\"%arga%\\\\\"\" OR LOWER\\(property_address\\) LIKE \\\\\"\"%aarga%\\\\\"\"\"\"}')",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT id, property_address, city, latitude, longitude FROM sellers WHERE LOWER\\(property_address\\) LIKE \\\\\"\"%argau%\\\\\"\"\"\"}')",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT id, property_address, city, property_type, latitude, longitude FROM sellers WHERE LOWER\\(property_address\\) LIKE \\\\\"\"%aarghau%\\\\\"\" OR LOWER\\(property_address\\) LIKE \\\\\"\"%aarghauchowk%\\\\\"\"\"\"}')",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d \"{\"\"sql\"\": \"\"SELECT SOUNDEX\\(''Aargau''\\) as s1, SOUNDEX\\(''Aarghau''\\) as s2\"\"}\")",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d \"{\"\"sql\"\": \"\"SELECT SOUNDEX\\(''Aarghau chowk''\\) as s1, SOUNDEX\\(''Aargau''\\) as s2, SOUNDEX\\(''Aarghauchowk''\\) as s3\"\"}\")",
+      "Bash(for q:*)",
+      "Bash(do echo:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT COUNT\\(DISTINCT LOWER\\(property_address\\)\\) as unique_areas FROM sellers WHERE latitude IS NOT NULL AND latitude > 0\"\"}')"
     ]
   }
 }

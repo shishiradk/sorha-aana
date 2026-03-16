@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sorha Aana - DB Viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Courier New", monospace; background: #f5f5f5; color: #111; }
+  header { background: #111; color: #fff; padding: 16px 24px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  header h1 { font-size: 1.2rem; text-transform: uppercase; letter-spacing: 2px; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 12px 24px; background: #222; }
+  .tab { padding: 6px 14px; cursor: pointer; background: #444; color: #ccc; font-family: inherit; font-size: 0.8rem; border: none; text-transform: uppercase; }
+  .tab.active { background: #008037; color: #fff; }
+  .tab:hover:not(.active) { background: #555; }
+  .toolbar { display: flex; gap: 10px; padding: 12px 24px; background: #fff; border-bottom: 1px solid #ddd; align-items: center; flex-wrap: wrap; }
+  .toolbar input { padding: 6px 12px; border: 1px solid #ccc; font-family: inherit; font-size: 0.85rem; width: 280px; }
+  .toolbar span { font-size: 0.8rem; color: #666; }
+  .table-wrap { overflow-x: auto; padding: 0 24px 24px; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.78rem; margin-top: 12px; background: #fff; }
+  thead th { background: #111; color: #fff; padding: 8px 10px; text-align: left; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { background: #333; }
+  thead th .sort-icon { margin-left: 4px; opacity: 0.5; }
+  thead th.asc .sort-icon::after { content: " ▲"; }
+  thead th.desc .sort-icon::after { content: " ▼"; }
+  thead th:not(.asc):not(.desc) .sort-icon::after { content: " ⇅"; }
+  tbody tr:nth-child(even) { background: #f9f9f9; }
+  tbody tr:hover { background: #e8f5ee; }
+  td { padding: 6px 10px; border-bottom: 1px solid #eee; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+  td.null { color: #bbb; font-style: italic; }
+  td.coord { color: #008037; font-weight: bold; }
+  td.empty-coord { color: #e53; font-weight: bold; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .pagination { display: flex; gap: 6px; align-items: center; padding: 10px 24px; background: #fff; border-top: 1px solid #eee; flex-wrap: wrap; }
+  .pagination button { padding: 4px 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-family: inherit; font-size: 0.8rem; }
+  .pagination button.active { background: #008037; color: #fff; border-color: #008037; }
+  .pagination button:hover:not(.active) { background: #eee; }
+  .badge { display: inline-block; padding: 1px 6px; font-size: 0.7rem; border-radius: 2px; }
+  .badge-green { background: #d4edda; color: #155724; }
+  .badge-red { background: #f8d7da; color: #721c24; }
+  .badge-gray { background: #e2e3e5; color: #383d41; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Sorha Aana — DB Viewer</h1>
+  <span id="loadStatus" style="color:#aaa;font-size:0.8rem;">Loading...</span>
+</header>
+
+<div class="tabs" id="tabs"></div>
+
+<div id="panels"></div>
+
+<script>
+const PAGE_SIZE = 100;
+
+let DB = {};
+let state = {}; // per-table: { page, search, sortCol, sortDir, filtered }
+
+function loadData() {
+  fetch('db_viewer.json')
+    .then(r => r.json())
+    .then(data => {
+      DB = data;
+      document.getElementById('loadStatus').textContent =
+        Object.entries(data).map(([t,rows]) => t + '(' + rows.length + ')').join('  ');
+      init();
+    })
+    .catch(e => {
+      document.getElementById('loadStatus').textContent = 'Error: ' + e.message;
+    });
+}
+
+function init() {
+  const tabsEl = document.getElementById('tabs');
+  const panelsEl = document.getElementById('panels');
+  const tables = Object.keys(DB);
+
+  tables.forEach((table, i) => {
+    const rows = DB[table];
+    state[table] = { page: 1, search: '', sortCol: null, sortDir: 'asc', filtered: rows };
+
+    // Tab
+    const tab = document.createElement('button');
+    tab.className = 'tab' + (i === 0 ? ' active' : '');
+    tab.textContent = table.replace('_', ' ') + ' (' + rows.length + ')';
+    tab.onclick = () => switchTab(table);
+    tabsEl.appendChild(tab);
+
+    // Panel
+    const panel = document.createElement('div');
+    panel.className = 'panel' + (i === 0 ? ' active' : '');
+    panel.id = 'panel-' + table;
+    panel.innerHTML = `
+      <div class="toolbar">
+        <input type="text" placeholder="Search in ${table}..." oninput="onSearch('${table}', this.value)">
+        <span id="count-${table}">${rows.length} rows</span>
+        <span style="color:#008037;font-weight:bold" id="geocount-${table}"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="table-${table}">
+          <thead id="thead-${table}"></thead>
+          <tbody id="tbody-${table}"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pages-${table}"></div>
+    `;
+    panelsEl.appendChild(panel);
+
+    if (rows.length > 0) {
+      buildHeader(table, Object.keys(rows[0]));
+      renderTable(table);
+      updateGeoCount(table);
+    }
+  });
+}
+
+function switchTab(table) {
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', t.textContent.startsWith(table.replace('_', ' ')));
+  });
+  document.querySelectorAll('.panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'panel-' + table);
+  });
+}
+
+function buildHeader(table, cols) {
+  const thead = document.getElementById('thead-' + table);
+  thead.innerHTML = '<tr>' + cols.map(col => `
+    <th class="sortable" onclick="sortTable('${table}','${col}')">
+      ${col}<span class="sort-icon"></span>
+    </th>`).join('') + '</tr>';
+}
+
+function sortTable(table, col) {
+  const s = state[table];
+  if (s.sortCol === col) {
+    s.sortDir = s.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    s.sortCol = col;
+    s.sortDir = 'asc';
+  }
+  s.page = 1;
+
+  // Update header icons
+  const thead = document.getElementById('thead-' + table);
+  thead.querySelectorAll('th').forEach(th => {
+    th.classList.remove('asc', 'desc');
+    if (th.textContent.trim().startsWith(col)) {
+      th.classList.add(s.sortDir);
+    }
+  });
+
+  applyFilterSort(table);
+}
+
+function onSearch(table, val) {
+  state[table].search = val.toLowerCase();
+  state[table].page = 1;
+  applyFilterSort(table);
+}
+
+function applyFilterSort(table) {
+  const s = state[table];
+  let rows = DB[table];
+
+  // Filter
+  if (s.search) {
+    rows = rows.filter(row =>
+      Object.values(row).some(v => v && String(v).toLowerCase().includes(s.search))
+    );
+  }
+
+  // Sort
+  if (s.sortCol) {
+    rows = [...rows].sort((a, b) => {
+      let av = a[s.sortCol] ?? '';
+      let bv = b[s.sortCol] ?? '';
+      // Numeric sort if both look like numbers
+      const an = parseFloat(av), bn = parseFloat(bv);
+      if (!isNaN(an) && !isNaN(bn)) return s.sortDir === 'asc' ? an - bn : bn - an;
+      return s.sortDir === 'asc'
+        ? String(av).localeCompare(String(bv))
+        : String(bv).localeCompare(String(av));
+    });
+  }
+
+  s.filtered = rows;
+  document.getElementById('count-' + table).textContent = rows.length + ' rows';
+  renderTable(table);
+}
+
+function renderTable(table) {
+  const s = state[table];
+  const rows = s.filtered;
+  const cols = DB[table].length > 0 ? Object.keys(DB[table][0]) : [];
+
+  const start = (s.page - 1) * PAGE_SIZE;
+  const pageRows = rows.slice(start, start + PAGE_SIZE);
+
+  const tbody = document.getElementById('tbody-' + table);
+  tbody.innerHTML = pageRows.map(row =>
+    '<tr>' + cols.map(col => {
+      const v = row[col];
+      if (v === null || v === '' || v === 'null' || v === undefined) {
+        return '<td class="null">—</td>';
+      }
+      if ((col === 'latitude' || col === 'longitude') && v && v !== '0' && v !== '0.0000000') {
+        return '<td class="coord">' + v + '</td>';
+      }
+      if ((col === 'latitude' || col === 'longitude') && (!v || v === '0' || v === '0.0000000')) {
+        return '<td class="empty-coord">NULL</td>';
+      }
+      const str = String(v);
+      return '<td title="' + str.replace(/"/g, '&quot;') + '">' + escHtml(str.length > 60 ? str.slice(0, 60) + '…' : str) + '</td>';
+    }).join('') + '</tr>'
+  ).join('');
+
+  buildPagination(table, rows.length);
+}
+
+function buildPagination(table, total) {
+  const s = state[table];
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const el = document.getElementById('pages-' + table);
+
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+  let html = '';
+  const around = 2;
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || (p >= s.page - around && p <= s.page + around)) {
+      html += `<button class="${p === s.page ? 'active' : ''}" onclick="goPage('${table}',${p})">${p}</button>`;
+    } else if (p === s.page - around - 1 || p === s.page + around + 1) {
+      html += '<span>…</span>';
+    }
+  }
+  el.innerHTML = `<span style="font-size:0.8rem;color:#666">Page ${s.page}/${totalPages} &nbsp;</span>` + html;
+}
+
+function goPage(table, page) {
+  state[table].page = page;
+  renderTable(table);
+}
+
+function updateGeoCount(table) {
+  const el = document.getElementById('geocount-' + table);
+  if (!el) return;
+  const rows = DB[table];
+  if (!rows[0] || !('latitude' in rows[0])) return;
+  const geocoded = rows.filter(r => r.latitude && r.latitude !== '0' && r.latitude !== '0.0000000' && r.latitude !== null).length;
+  const nullCoords = rows.filter(r => !r.latitude || r.latitude === '0' || r.latitude === '0.0000000').length;
+  el.textContent = geocoded + ' geocoded, ' + nullCoords + ' need coords';
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+loadData();
+</script>
+</body>
+</html>

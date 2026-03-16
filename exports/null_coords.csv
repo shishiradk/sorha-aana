@@ -1,0 +1,298 @@
+table,id,address,city,ward_num,property_type,latitude,longitude
+sellers,1656,"Fulbari chapapani","","",LAND,,
+sellers,1389,"Hawelimarga","","14",LAND,28.192635, 84.007024
+sellers,233,"Phursekhola","","22",LAND,28.198616, 83.896581
+sellers,829,"Ram Mandir bata 600m Bhitra","Birauta","17",LAND,28.190614, 83.970250
+sellers,830,"Madhya Path","Lamachour","19",HOUSE,28.258124, 83.976753
+sellers,1068,"Aarghauchowk","Lekhnath","26",LAND,28.162826, 84.057062
+sellers,1069,"Aarghauchowk","Lekhnath","26",LAND,28.162826, 84.057062
+sellers,1133,"Bhandardik","Lekhnath","29",HOUSE,28.151923, 84.063026
+sellers,1169,"Kharanefat","Lekhnath","26",LAND,28.187489, 84.053972
+sellers,966,"Kharanefat","Lekhnath","30",LAND,28.187489, 84.053972
+sellers,1031,"Khudi/Malepatan","Lekhnath","30",LAND,28.148685, 84.082968
+sellers,747,"Kimbesi","Lekhnath","28",LAND,,
+sellers,1020,"Lekhnath rithepani/Ghaleni dhara /Golpatan","Lekhnath","27",LAND,28.161619, 84.045590
+sellers,1076,"MaidiTal","Lekhnath","27",LAND,28.177637, 84.080655
+sellers,742,"Naharchowk","Lekhnath","27",LAND,28.164496, 84.088084
+sellers,58,"Aarchaley","Pokhara","",RESTAURANT,28.193358, 84.065163
+sellers,245,"Aarghauchowk","Pokhara","",LAND,28.162826, 84.057062
+sellers,202,"Aarmala","Pokhara","",LAND,28.290726, 84.000723
+sellers,468,"Aarmala","Pokhara","",LAND,28.290726, 84.000723
+sellers,723,"Aaudhyogik chhetra","Pokhara","10",HOUSE,28.201303, 84.009439
+sellers,863,"Aaudhyogik chhetra","Pokhara","14",LAND,28.201303, 84.009439
+sellers,1008,"Aaudhyogik chhetra","Pokhara","14",LAND,28.201303, 84.009439
+sellers,1079,"Aaudhyogik chhetra","Pokhara","10",HOUSE,28.201303, 84.009439
+sellers,1244,"Aaudhyogik chhetra","Pokhara","10",LAND,28.201303, 84.009439
+sellers,1245,"Aaudhyogik chhetra","Pokhara","10",LAND,28.201303, 84.009439
+sellers,1527,"Aaudhyogik chhetra","Pokhara","14",LAND,28.201303, 84.009439
+sellers,1567,"Aaudhyogik chhetra","Pokhara","14",LAND,28.201303, 84.009439
+sellers,1688,"aaudhyogik chhetra,chauthe","pokhara","14",LAND,28.201303, 84.009439
+sellers,1208,"Amarsingh chowk","Pokhara","10",LAND,28.204954, 84.000935
+sellers,1512,"Amarsingh chowk","Pokhara","10",LAND,28.204954, 84.000935
+sellers,1140,"Amintara","Pokhara","15",LAND,28.182485, 83.990704
+sellers,1249,"Bagale Tole","Pokhara","3",HOUSE,28.222792, 83.981844
+sellers,1010,"Bagale Tole","Pokhara","3",LAND,28.222792, 83.981844
+sellers,1576,"Bagaletole","Pokhara","2",HOUSE,28.222792, 83.981844
+sellers,1612,"baglung bus park pachadi","pokhara","2",LAND,28.232473, 83.983960
+sellers,14,"Bajhapatan","Pokhara","",HOUSE,28.215640, 84.017397
+sellers,36,"Bajhapatan","pokhara","13",LAND,28.215640, 84.017397
+sellers,50,"Bajhapatan","Pokhara","",HOUSE,28.215640, 84.017397
+sellers,51,"Bajhapatan","Pokhara","",HOUSE,28.215640, 84.017397
+sellers,545,"Bajhapatan","Pokhara","",HOUSE,28.215640, 84.017397
+sellers,574,"Bajhapatan","Pokhara","",HOUSE,28.215640, 84.017397
+sellers,715,"Bajhapatan","Pokhara","12",LAND,28.215640, 84.017397
+sellers,1492,"Bajhapatan","Pokhara","13",HOUSE,28.215640, 84.017397
+sellers,74,"baral petrol pump sanga jodiyeko","Pokhara","",SHOP,28.213055, 83.970432
+sellers,294,"Bhandardik","Pokhara","",LAND,28.151963, 84.063011
+sellers,462,"Bhandardik","Pokhara","",LAND,28.151963, 84.063011
+sellers,595,"Bhandardik","Pokhara","",LAND,28.151963, 84.063011
+sellers,636,"Bhandardik","Pokhara","29",LAND,28.151963, 84.063011
+sellers,1469,"Bhandardik","Pokhara","29",LAND,28.151963, 84.063011
+sellers,1595,"bhandari dahar","pokhara","19",LAND,28.262974, 83.968170
+sellers,1629,"bhotechautara","pokhara","14",LAND,28.173827, 84.027865
+sellers,1625,"Birauta (himalayan eye hospital area)","pokhara","17",LAND,,28.191080, 83.976526
+sellers,1201,"Buddhachowk","Pokhara","10",LAND,28.206000, 83.994771
+sellers,1332,"Buddhachowk","Pokhara","10",LAND,28.206000, 83.994771
+sellers,1333,"Buddhachowk","Pokhara","10",LAND,28.206000, 83.994771
+sellers,1334,"Buddhachowk","Pokhara","10",HOUSE,28.206000, 83.994771
+sellers,1392,"Buddhachowk","Pokhara","10",LAND,28.206000, 83.994771
+sellers,1481,"Buddhachowk","Pokhara","10",HOUSE,28.206000, 83.994771
+sellers,940,"buddhachowk","Pokhara","10",LAND,28.206000, 83.994771
+sellers,119,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,524,"budibajar","pokhara","",LAND,28.185004, 84.037600
+sellers,672,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,673,"Budibajar","Pokhara","23",LAND,28.185004, 84.037600
+sellers,864,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,903,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,1672,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,1091,"Budibajar","Pokhara","26",LAND,28.185004, 84.037600
+sellers,1483,"Budibajar","Pokhara","27",LAND,28.185004, 84.037600
+sellers,1077,"Chalise chowk","Pokhara","0",LAND,,
+sellers,1700,"Chauthe","pokhara","14",LAND,28.193794, 84.022316
+sellers,1686,"chauthe aaudhyogik chhetra","pokhara","11",LAND,28.201303, 84.009439
+sellers,1696,"chauthe BP marga","pokhara","14",LAND,28.199581, 84.017408
+sellers,1678,"chauthe khasibajar","pokhara","14",LAND,28.198611, 84.015064
+sellers,1684,"chauthe kudahar","pokhara","14",LAND,28.204227, 84.003048
+sellers,1682,"chauthe kudahar","pokhara","14",LAND,28.204227, 84.003048
+sellers,1680,"chauthe kudahar","Pokhara","14",LAND,28.204227, 84.003048
+sellers,1689,"chauthe, Aaudhyogik chhetra","pokhara","14",LAND,28.201303, 84.009439
+sellers,1677,"chauthe, kudahar","pokhara","14",LAND,28.204227, 84.003048
+sellers,1234,"Chauthe/Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1082,"Chinedada","Pokhara","14",HOUSE,28.173189, 84.015385
+sellers,1085,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1102,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1207,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1279,"Chinedada","Pokhara","14",HOUSE,28.173189, 84.015385
+sellers,1366,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1532,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,552,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,732,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,743,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,795,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1004,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1037,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1038,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1040,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1041,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1042,"Chinedada","Pokhara","14",LAND,28.173189, 84.015385
+sellers,1594,"CTEVT area","pokhara","11",LAND,28.222002, 84.000902
+sellers,1596,"depang tal","pokhara","26",LAND,28.179870, 84.071798
+sellers,1266,"Dhikalthar","Pokhara","12",LAND,28.288055, 83.972248
+sellers,1275,"Dhikalthar","Pokhara","13",HOUSE,28.288055, 83.972248
+sellers,41,"Dhikalthar","Pokhara","",LAND,28.288055, 83.972248
+sellers,63,"Dhikalthar","Pokhara","",HOUSE,28.288055, 83.972248
+sellers,984,"Dhikalthar","Pokhara","12",LAND,28.288055, 83.972248
+sellers,985,"Dhikalthar","Pokhara","12",HOUSE,28.288055, 83.972248
+sellers,1363,"Dhikidada","Pokhara","16",LAND,28.288055, 83.972248
+sellers,1353,"Dikopatan","Pokhara","6",LAND,28.214789, 83.960577
+sellers,951,"Dovilla","Pokhara","17",LAND,28.163225, 84.004580
+sellers,657,"Duikulo muhan","Pokhara","13",HOUSE,28.764031, 83.716627
+sellers,714,"Duikulo muhan","Pokhara","13",LAND,28.764031, 83.716627
+sellers,784,"Duikulo muhan","Pokhara","13",LAND,28.764031, 83.716627
+sellers,1414,"Duikulo muhan","Pokhara","14",LAND,28.764031, 83.716627
+sellers,1417,"Duikulo muhan","Pokhara","14",LAND,28.764031, 83.716627
+sellers,1418,"Duikulo muhan","Pokhara","14",LAND,28.764031, 83.716627
+sellers,1419,"Duikulo muhan","Pokhara","14",LAND,28.764031, 83.716627
+sellers,1432,"Duikulo muhan","Pokhara","13",HOUSE,28.764031, 83.716627
+sellers,249,"Dumre","Pokhara","",LAND,,
+sellers,99,"Fishtal","Pokhara","",HOUSE,28.225747, 83.990846
+sellers,365,"Fulbari hotel","Pokhara","",HOUSE,28.176868, 84.000012
+sellers,1227,"Fulbari Resort","Pokhara","15",LAND,28.176924, 84.000913
+sellers,1067,"Gaudamukh","Pokhara","13",LAND,28.214491, 84.008186
+sellers,1255,"Gaudamukh","Pokhara","13",HOUSE,28.214491, 84.008186
+sellers,111,"Gaudamukh","Pokhara","",HOUSE,28.214491, 84.008186
+sellers,757,"Gaudamukh","Pokhara","12",HOUSE,28.214491, 84.008186
+sellers,851,"Gaudamukh","Pokhara","13",HOUSE,28.214491, 84.008186
+sellers,551,"Hariyokharka","Pokhara","",HOUSE,28.193103, 83.987524
+sellers,856,"Haweli Marga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,730,"Hawelimarga","Pokhara","15",LAND,28.192739, 84.008302
+sellers,1043,"Hawelimarga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,1452,"Hawelimarga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,1453,"Hawelimarga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,1454,"Hawelimarga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,1457,"Hawelimarga","Pokhara","14",HOUSE,28.192739, 84.008302
+sellers,1458,"Hawelimarga","Pokhara","14",HOUSE,28.192739, 84.008302
+sellers,1459,"Hawelimarga","Pokhara","14",HOUSE,28.192739, 84.008302
+sellers,1531,"Hawelimarga","Pokhara","14",LAND,28.192739, 84.008302
+sellers,1557,"Jalparoad","Pokhara","4",HOUSE,28.213263, 83.983404
+sellers,727,"Jalparoad","Pokhara","9",LAND,28.213263, 83.983404
+sellers,872,"Jalparoad","Pokhara","8",HOUSE,28.213263, 83.983404
+sellers,878,"Jalparoad","Pokhara","8",HOUSE,28.213263, 83.983404
+sellers,1318,"Kajpokhari","Pokhara","15",HOUSE,28.197821, 84.002517
+sellers,1619,"kannendanda silinge","pokhara","26",LAND,28.192739, 84.008302
+sellers,647,"Kasheri","Pokhara","20",LAND,28.238460, 84.012742
+sellers,832,"Kaudada","Pokhara","13",LAND,28.230427, 84.016606
+sellers,875,"Kaudada","Pokhara","13",LAND,28.230427, 84.016606
+sellers,915,"Kaudada","Pokhara","13",LAND,28.230427, 84.016606
+sellers,1683,"kaudada","pokhara","11",LAND,28.231269, 84.006100
+sellers,1181,"Kaudada","Pokhara","13",LAND,28.230427, 84.016606
+sellers,1277,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1307,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1344,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1533,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1560,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1561,"Kaudada","Pokhara","11",LAND,28.231269, 84.006100
+sellers,136,"Kaudanda","Pokhara","",LAND,28.232277, 84.009609
+sellers,236,"Kaudanda","Pokhara","",LAND,28.232277, 84.009609
+sellers,475,"kaudanda","Pokhara","",LAND,28.232277, 84.009609
+sellers,777,"Kaudanda","Pokhara","11",LAND,28.231269, 84.006100
+sellers,1621,"kaudanda (pade thok)","pokhara","11",LAND,28.231269, 84.006100
+sellers,1150,"Kaukhola","Pokhara","13",HOUSE,28.218859, 84.017857
+sellers,1226,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1229,"Kaukhola","Pokhara","13",HOUSE,28.218859, 84.017857
+sellers,1262,"Kaukhola","Pokhara","13",HOUSE,28.218859, 84.017857
+sellers,1292,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1293,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1294,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1295,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1341,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1343,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1430,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1431,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1565,"Kaukhola","Pokhara","13",HOUSE,28.218859, 84.017857
+sellers,60,"Kaukhola","Pokhara","",HOUSE,28.218859, 84.017857
+sellers,228,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,542,"Kaukhola","Pokhara","",LAND,28.218859, 84.017857
+sellers,644,"kaukhola","Pokhara","14",LAND,28.218859, 84.017857
+sellers,708,"Kaukhola","Pokhara","20",LAND,28.218859, 84.017857
+sellers,709,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,771,"Kaukhola","Pokhara","12",LAND,28.216024, 84.019103
+sellers,772,"Kaukhola","Pokhara","12",LAND,28.216024, 84.019103
+sellers,852,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,853,"Kaukhola","Pokhara","13",LAND,28.218859, 84.017857
+sellers,1692,"kaukhola patanbesi","pokhara","13",HOUSE,28.218859, 84.017857
+sellers,1590,"kaukhola patanbesi dhalkepul","pokhara","13",LAND,28.218859, 84.017857
+sellers,1095,"Khaltemasina","Pokhara","14",LAND,28.173554, 84.020668
+sellers,1128,"Khaltemasina","Pokhara","14",LAND,28.173554, 84.020668
+sellers,1129,"Khaltemasina","Pokhara","14",LAND,28.173554, 84.020668
+sellers,450,"Khasibajar","pokhara","",HOUSE,27.689951, 85.284812
+sellers,1007,"Khasibajar","Pokhara","14",LAND,27.689951, 85.284812
+sellers,1135,"Khasibajar","Pokhara","14",LAND,27.689951, 85.284812
+sellers,1379,"Khasibajar","Pokhara","14",HOUSE,27.689951, 85.284812
+sellers,1214,"Kimbesi","Pokhara","31",LAND,28.165338, 84.089953
+sellers,1626,"lakeside street num 7","pokhara","6",LAND,28.206858, 83.962492
+sellers,756,"Lekhnath Sishuwa","Pokhara","28",LAND,28.165291, 84.069962
+sellers,849,"Mahatgauda","Pokhara","17",HOUSE,28.177963, 83.990215
+sellers,1257,"Mahatgauda","Pokhara","17",HOUSE,28.177963, 83.990215
+sellers,1622,"Mahatgauda(pokhara aged shelter najik)","pokhara","17",LAND,28.176442, 83.992118
+sellers,1608,"majheripatan gorkha village agadi","pokhara","14",LAND,28.176096, 84.032738
+sellers,1610,"malepatan biscuit factory around","pokhara","5",LAND,28.211984, 83.979491
+sellers,1609,"malepatan highway gol chautara","pokhara","5",LAND,28.219323, 83.973247
+sellers,1606,"malepatan,gol chautara around","pokhara","5",LAND,28.219323, 83.973247
+sellers,1268,"Milantole","Pokhara","10",LAND,28.202574, 84.000614
+sellers,668,"Milantole","Pokhara","10",LAND,28.202574, 84.000614
+sellers,900,"MustangChowk","Pokhara","17",LAND,28.198276, 83.975648
+sellers,1465,"MustangChowk","Pokhara","17",HOUSE,28.198276, 83.975648
+sellers,1502,"MustangChowk","Pokhara","17",LAND,28.198276, 83.975648
+sellers,1613,"Nadipur,(minmart pachadi)","pokhara","3",LAND,28.230745, 83.991173
+sellers,1056,"Naghdhunga","Pokhara","9",LAND,28.207373, 83.987048
+sellers,1059,"Naghdhunga","Pokhara","9",LAND,28.203930, 83.978098
+sellers,1060,"Naghdhunga","Pokhara","9",LAND,28.203930, 83.978098
+sellers,1583,"Naghdhunga","Pokhara","6",HOTEL,28.203930, 83.978098
+sellers,1078,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1086,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1089,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1090,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1248,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1253,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1269,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1282,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1315,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1375,"Nayabajar","Pokhara","4",HOUSE,28.218894, 83.990695
+sellers,1378,"Nayabajar","Pokhara","9",HOUSE,28.218894, 83.990695
+sellers,1408,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1420,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1504,"Nayabajar","Pokhara","6",LAND,28.218894, 83.990695
+sellers,1573,"Nayabajar","Pokhara","3",HOUSE,28.218894, 83.990695
+sellers,933,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,963,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,1018,"Nayabajar","Pokhara","4",LAND,28.218894, 83.990695
+sellers,1024,"Nayabajar","Pokhara","4",HOUSE,28.218894, 83.990695
+sellers,1046,"Nayabajar","Pokhara","9",LAND,28.218894, 83.990695
+sellers,854,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1409,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1436,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1437,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1438,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1439,"Nayagau","Pokhara","15",LAND,28.195203, 83.990822
+sellers,1604,"Nayagaun ban campus","pokhara","15",LAND,28.188988, 83.990732
+sellers,1670,"palikhe chowk","pokhara","9",LAND,28.226030, 83.990807
+sellers,982,"Palikhe Chowk","Pokhara","3",LAND,28.226030, 83.990807
+sellers,1607,"parsyang panitanki vitra","pokhara","5",LAND,28.228401, 83.980848
+sellers,359,"Phursekhola","pokhara","22",LAND,28.161773, 84.008581
+sellers,711,"Phursekhola","Pokhara","22",LAND,28.161773, 84.008581
+sellers,1019,"Phursekhola","Pokhara","17",LAND,28.161773, 84.008581
+sellers,147,"Pokhara Bata 25 km tada","Pokhara","",LAND,,
+sellers,1377,"Prithivichowk","Pokhara","10",HOTEL,28.209546, 83.985530
+sellers,684,"PU/Lekhnath","Pokhara","30",LAND,28.185288, 84.035837
+sellers,496,"Rajchautara","pokhara","",LAND,28.120260, 84.103325
+sellers,1620,"Rambajar pension camp gate no 2","pokhara","10",LAND,28.201238, 83.995332
+sellers,1701,"Ranipauwa","Pokhara","11",LAND,28.220699, 83.996773
+sellers,1486,"Ratnachowk","Pokhara","8",LAND,28.207639, 83.975181
+sellers,96,"Ratnachowk","Pokhara","",HOUSE,28.207639, 83.975181
+sellers,859,"Ratnachowk","Pokhara","8",LAND,28.207639, 83.975181
+sellers,913,"Ratnachowk","Pokhara","8",LAND,28.207639, 83.975181
+sellers,533,"Sambhriddhi tole","pokhara","",HOUSE,28.207954, 84.016035
+sellers,1390,"Samye","Pokhara","21",HOUSE,,
+sellers,31,"Sangrilla","Pokhara","",HOUSE,28.209763, 83.971743
+sellers,1633,"saragkot","pokhara","18",LAND,28.245879, 83.948374
+sellers,264,"Siddharthachowk","pokhara","",HOUSE,28.224352, 83.984666
+sellers,537,"singapore tole","Pokhara","10",HOUSE,28.202850, 84.000479
+sellers,971,"Singapore Tole","Pokhara","10",LAND,28.202850, 84.000479
+sellers,1130,"Singapore tole","Pokhara","10",LAND,28.202850, 84.000479
+sellers,370,"Sishuwa Naubisey","Pokhara","",HOUSE,28.166350, 84.066637
+sellers,1615,"sitaladevi mandir najikai","pokhara","12",LAND,28.216872, 84.002363
+sellers,1110,"Sitaldevi","Pokhara","12",HOUSE,28.216872, 84.002363
+sellers,1365,"Sitaldevi","Pokhara","12",LAND,28.216872, 84.002363
+sellers,482,"sitaldevi","pokhara","",LAND,28.216872, 84.002363
+sellers,997,"sitaldevi","Pokhara","12",LAND,28.216872, 84.002363
+sellers,998,"Sitaldevi","Pokhara","12",LAND,28.216872, 84.002363
+sellers,46,"Sitaldevi mandir","Pokhara","",LAND,28.216872, 84.002363
+sellers,606,"Sitaldevi mandir","Pokhara","",LAND,28.216872, 84.002363
+sellers,1155,"Sitaldevi mandir","Pokhara","12",LAND,28.216872, 84.002363
+sellers,1105,"Srijanachowk","Pokhara","8",LAND,28.209483, 83.985321
+sellers,1134,"Syani majuwa","Pokhara","15",HOUSE,28.194898, 83.996024
+sellers,666,"Uttamchowk","Pokhara","11",LAND,28.205618, 83.997763
+sellers,823,"Chamal Chowk","Talchowk","27",LAND,28.162815, 84.057093
+rental_owners,95,"Bajhapatan","Pokhara","",FLAT,28.215585, 84.017372
+rental_owners,120,"Bajhapatan","Pokhara","13",FLAT,28.215585, 84.017372
+rental_owners,109,"Buddhachowk","pokhara","",FLAT,28.206223, 83.994611
+rental_owners,144,"Buddhachowk","Pokhara","10",OFFICE_SPACE,28.206223, 83.994611
+rental_owners,137,"Buddhachowk","Pokhara","10",OFFICE_SPACE,28.206223, 83.994611
+rental_owners,126,"Budibajar","Pokhara","26",LAND,28.184437, 84.036741
+rental_owners,164,"chapapani","pokhara","12",ROOM,28.219913, 84.004995
+rental_owners,102,"chindanda","pokhara","",FLAT,28.219913, 84.004995
+rental_owners,114,"Dhikalthar","pokhara","",ROOM,,
+rental_owners,165,"fulbari","pokhara","11",ROOM,28.226281, 83.999223
+rental_owners,161,"fulbari  bhaskar school najikai","pokhara","11",FLAT,28.226281, 83.999223
+rental_owners,152,"Khasibajar","Pokhara","14",SHUTTER,27.689232, 85.284300
+rental_owners,54,"lakeside sedi","Pokhara","",HOTEL,28.223907, 83.955187
+rental_owners,108,"Laligurash tole","pokhara","",FLAT,28.207485, 84.005003
+rental_owners,110,"naghdhunga","pokhara","",HOUSE,28.203837, 83.977883
+rental_owners,132,"Nayabajar","Pokhara","9",OFFICE_SPACE,28.218863, 83.990685
+rental_owners,122,"Nayabajar","Pokhara","9",HOUSE,28.218863, 83.990685
+rental_owners,156,"Palikhe Chowk","Pokhara","3",FLAT,28.225995, 83.990792
+rental_owners,158,"pokhara-12 chapapani","pokhara","12",HOUSE,28.244064, 83.955023
+rental_owners,159,"pokhara-12 chapapani","pokhara","12",HOUSE,28.244064, 83.955023
+rental_owners,128,"Rastra Bank Marga","Pokhara","17",FLAT,28.205562, 83.975163
+rental_owners,163,"Rastrabank chowk","pokhara","17",LAND,28.205562, 83.975163

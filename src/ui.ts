@@ -203,7 +203,7 @@ export const html = `
         </header>
 
         <form id="searchForm" class="search-box">
-            <input type="text" id="query" placeholder="Search properties... (English / Nepali / Nenglish)" required autocomplete="off">
+            <input type="text" id="query" placeholder="Search properties..." required autocomplete="off">
             <button type="submit">SEARCH</button>
         </form>
 

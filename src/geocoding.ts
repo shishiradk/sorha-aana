@@ -69,21 +69,28 @@ export async function geocodeLocation(
  * Returns the location name to geocode, or null if no location intent
  */
 export function extractLocationFromQuery(query: string): string | null {
+  const stopWords = /\b(?:with|under|below|above|budget|for|price|rent|sale|house|land|flat|room|apartment|property|bedroom|\d)/i;
+  // Filler words to strip from extracted location phrases
+  const fillerWords = new Set(['the', 'a', 'an', 'this', 'that', 'area', 'region', 'place', 'zone', 'side', 'part', 'some', 'any', 'all', 'list', 'show', 'me', 'find', 'get']);
+
+  const cleanLocation = (loc: string): string | null => {
+    const cleaned = loc.split(/\s+/).filter(w => !fillerWords.has(w.toLowerCase())).join(' ').trim();
+    return cleaned.length >= 2 ? cleaned : null;
+  };
+
   // "near X", "around X", "close to X"
-  const nearMatch = query.match(/(?:near|around|close\s+to|nearby|najik(?:ai)?|nera)\s+(.+?)(?:\s+(?:with|under|below|above|budget|for|in|ko|ma|price|rent|sale|house|land|flat|room|apartment|property|ghar|jagga|bedroom|\d))/i);
-  if (nearMatch) return nearMatch[1].trim();
+  const nearMatch = query.match(/(?:near|around|close\s+to|nearby)\s+(.+?)(?:\s+(?:with|under|below|above|budget|for|price|rent|sale|house|land|flat|room|apartment|property|bedroom|\d))/i);
+  if (nearMatch) return cleanLocation(nearMatch[1]);
 
   // "near X" at end of query
-  const nearEnd = query.match(/(?:near|around|close\s+to|najik(?:ai)?|nera)\s+(.+)$/i);
-  if (nearEnd) return nearEnd[1].trim();
+  const nearEnd = query.match(/(?:near|around|close\s+to|nearby)\s+(.+)$/i);
+  if (nearEnd) return cleanLocation(nearEnd[1]);
 
-  // "X najik" / "X tira" / "X nera" (Nepali postpositions)
-  const nepaliPost = query.match(/(.+?)\s+(?:najik(?:ai)?|tira|nera|nira)\b/i);
-  if (nepaliPost) {
-    const loc = nepaliPost[1].trim();
-    // Take the last 1-3 words as location (avoid capturing "house in Pokhara" → "house in")
-    const words = loc.split(/\s+/);
-    return words.slice(-Math.min(3, words.length)).join(' ');
+  // "in X" / "at X" — e.g. "house in chauthe", "property at malepatan"
+  const inMatch = query.match(/\b(?:in|at)\s+([a-zA-Z][a-zA-Z\-]{2,}(?:\s+[a-zA-Z][a-zA-Z\-]+){0,3})(?:\s|$)/i);
+  if (inMatch) {
+    const loc = cleanLocation(inMatch[1]);
+    if (loc && !stopWords.test(loc)) return loc;
   }
 
   return null;

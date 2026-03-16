@@ -4,9 +4,10 @@ import { html } from './ui';
 import { RealEstateAPI } from './api';
 import { openApiSpec, swaggerHtml } from './swagger';
 import { getDatabaseSchema, formatSchemaForConsole, formatSchemaAsJson } from './inspect-db';
-import { queryAll } from './db-utils';
+import { queryAll, queryExecute } from './db-utils';
 import { processVectorizationQueue, getQueueStatus } from './vectorization-queue-processor';
 import { batchGeocode, getGeocodeStatus } from './batch-geocode';
+import { geocodeLocation } from './geocoding';
 
 export interface Env {
   HYPERDRIVE: any; // Hyperdrive MySQL connection
@@ -17,12 +18,74 @@ export interface Env {
   PRICE_TOLERANCE: string;
 }
 
+/** Geocode new properties that have latitude IS NULL — called by cron */
+async function geocodeNewProperties(env: Env, batchSize: number) {
+  const tables = [
+    { name: 'sellers', addressCol: 'property_address' },
+    { name: 'rental_owners', addressCol: 'address' },
+  ];
+
+  let geocoded = 0;
+  for (const { name: table, addressCol } of tables) {
+    try {
+      const { results: rows } = await queryAll(env,
+        `SELECT p.id, p.${addressCol} as addr, p.city, d.name as district_name, m.name as municipality_name
+         FROM ${table} p
+         LEFT JOIN districts d ON p.district_id = d.id
+         LEFT JOIN municipalities m ON p.municipal_id = m.id
+         WHERE p.latitude IS NULL AND p.status = 'ACTIVE'
+         LIMIT ?`,
+        [batchSize - geocoded]
+      );
+
+      if (!rows || rows.length === 0) continue;
+      console.log(`Geocoding ${rows.length} new ${table}...`);
+
+      for (const row of rows as any[]) {
+        if (geocoded >= batchSize) break;
+        const addrStr = [row.addr, row.city, row.municipality_name, row.district_name].filter(Boolean).join(', ');
+        if (!addrStr) continue;
+
+        try {
+          const coords = await geocodeLocation(addrStr);
+          if (coords) {
+            await queryExecute(env,
+              `UPDATE ${table} SET latitude = ?, longitude = ? WHERE id = ?`,
+              [coords.lat, coords.lng, row.id]
+            );
+            console.log(`  ${table} #${row.id} → ${coords.lat}, ${coords.lng}`);
+            geocoded++;
+          } else {
+            // Mark as attempted (lat=0) so we don't retry forever
+            await queryExecute(env,
+              `UPDATE ${table} SET latitude = 0, longitude = 0 WHERE id = ?`,
+              [row.id]
+            );
+            console.log(`  ${table} #${row.id} → geocoding failed, marked as attempted`);
+          }
+        } catch (err: any) {
+          console.warn(`  ${table} #${row.id} geocode error: ${err.message}`);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`Geocode scan for ${table} failed:`, err.message);
+    }
+  }
+
+  if (geocoded > 0) console.log(`Cron geocoded ${geocoded} new properties`);
+}
+
 export default {
   // Runs every 5 minutes via Cloudflare Cron Trigger
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Cron: running incremental vectorization...');
-    // No DB triggers (binary log restriction) — scan directly for unvectorized/updated properties
-    ctx.waitUntil(vectorizeProperties(env, true));
+    console.log('Cron: running incremental vectorization + geocoding...');
+    ctx.waitUntil((async () => {
+      // Step 1: Vectorize new/updated properties
+      await vectorizeProperties(env, true);
+
+      // Step 2: Geocode new properties that have no coordinates (5 per run to stay within 30s + rate limits)
+      await geocodeNewProperties(env, 5);
+    })());
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -201,6 +264,40 @@ export default {
 
 
 
+      // Update coordinates for specific properties (fixes lat=0 failures)
+      if (path === '/api/geocode/update' && request.method === 'POST') {
+        try {
+          const body = await request.json() as any;
+          const updates = body.updates as Array<{ table: string; id: number; lat: number; lng: number }>;
+
+          if (!Array.isArray(updates) || updates.length === 0) {
+            return Response.json({ error: 'Send { "updates": [{ "table": "sellers"|"rental_owners", "id": 123, "lat": 28.2, "lng": 83.9 }] }' },
+              { status: 400, headers: corsHeaders });
+          }
+
+          let updated = 0;
+          const errors: string[] = [];
+          for (const u of updates) {
+            if (!['sellers', 'rental_owners'].includes(u.table)) {
+              errors.push(`Invalid table: ${u.table}`);
+              continue;
+            }
+            try {
+              await queryExecute(env,
+                `UPDATE ${u.table} SET latitude = ?, longitude = ? WHERE id = ?`,
+                [u.lat, u.lng, u.id]);
+              updated++;
+            } catch (err: any) {
+              errors.push(`${u.table}#${u.id}: ${err.message}`);
+            }
+          }
+
+          return Response.json({ updated, errors, total: updates.length }, { headers: corsHeaders });
+        } catch (error: any) {
+          return Response.json({ error: error.message }, { status: 500, headers: corsHeaders });
+        }
+      }
+
       // Batch geocoding endpoints
       if (path === '/api/geocode/batch' && request.method === 'POST') {
         try {
@@ -256,7 +353,7 @@ export default {
         }
       }
 
-      // Database query endpoint - run any SQL query
+      // Database query endpoint - read-only SQL queries
       if (path === '/api/query' && request.method === 'POST') {
         try {
           const body = await request.json() as any;
@@ -266,6 +363,16 @@ export default {
             return Response.json(
               { error: 'Missing or invalid "sql" parameter. Send JSON: {"sql": "SELECT * FROM table"}' },
               { status: 400, headers: corsHeaders }
+            );
+          }
+
+          // Only allow read-only statements
+          const trimmed = sql.trim().toUpperCase();
+          const allowed = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'];
+          if (!allowed.some(kw => trimmed.startsWith(kw))) {
+            return Response.json(
+              { error: 'Only SELECT, SHOW, DESCRIBE, and EXPLAIN queries are permitted.' },
+              { status: 403, headers: corsHeaders }
             );
           }
 
@@ -279,7 +386,7 @@ export default {
 
         } catch (error: any) {
           return Response.json(
-            { error: `Query Error: ${error.message}` },
+            { error: 'Query failed. Check your SQL syntax.' },
             { status: 500, headers: corsHeaders }
           );
         }
@@ -299,6 +406,7 @@ export default {
         'POST /api/vectorize/queue/process - Process vectorization queue',
         'GET /api/vectorize/queue/status - Get queue status',
         'POST /api/geocode/batch - Batch geocode properties (body: {"batch_size": 20})',
+        'POST /api/geocode/update - Update coordinates (body: {"updates": [{"table","id","lat","lng"}]})',
         'GET /api/geocode/status - Get geocoding progress',
         'GET /api/db-schema - Get database schema',
         'POST /api/query - Run SQL query',

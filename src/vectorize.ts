@@ -76,11 +76,16 @@ function formatArea(area: string | null, unit: string | null): string {
   return `${area} ${unitLabel[u] || u}`.trim();
 }
 
-/** Parse layout string like "5BHK" into bedroom count */
+/** Parse layout string like "5BHK", "2B1K", "2 Bedroom" into bedroom count */
 function parseBHK(layout: string | null): number | null {
   if (!layout) return null;
-  const match = layout.match(/(\d+)\s*(?:BHK|R)/i);
-  return match ? parseInt(match[1]) : null;
+  const bhkMatch = layout.match(/(\d+)\s*(?:BHK|R)\b/i);
+  if (bhkMatch) return parseInt(bhkMatch[1]);
+  const bkMatch = layout.match(/(\d+)\s*B\s*\d+\s*K/i);
+  if (bkMatch) return parseInt(bkMatch[1]);
+  const bedMatch = layout.match(/(\d+)\s*(?:bedrooms?|bed)\b/i);
+  if (bedMatch) return parseInt(bedMatch[1]);
+  return null;
 }
 
 /** Format enum values: "NORTH-EAST" -> "North-East", "SOIL-STABILIZED" -> "Soil-Stabilized" */
@@ -694,6 +699,7 @@ async function processBatch(
       try {
         const chunks = chunkFn(row);
         const vectors = [];
+        let chunkErrors = 0;
 
         for (const chunk of chunks) {
           try {
@@ -709,29 +715,32 @@ async function processBatch(
             });
           } catch (chunkErr: any) {
             errors.push(`Embedding error for ${chunk.id}: ${chunkErr.message}`);
+            chunkErrors++;
           }
         }
 
         if (vectors.length > 0) {
           await env.VECTORIZE.upsert(vectors);
 
-          // Try to update tracking columns (may not exist yet)
-          try {
-            await queryExecute(env,
-              `UPDATE ${tableName}
-               SET is_vectorized_complete = TRUE,
-                   last_vectorized_at = NOW(),
-                   vectorization_error_message = NULL
-               WHERE id = ?`,
-              [rowId]
-            );
-          } catch {
-            // Tracking columns may not exist yet — that's OK
+          // Only mark as fully complete if every chunk was embedded successfully
+          if (chunkErrors === 0) {
+            try {
+              await queryExecute(env,
+                `UPDATE ${tableName}
+                 SET is_vectorized_complete = TRUE,
+                     last_vectorized_at = NOW(),
+                     vectorization_error_message = NULL
+                 WHERE id = ?`,
+                [rowId]
+              );
+            } catch {
+              // Tracking columns may not exist yet — that's OK
+            }
           }
 
           indexed += vectors.length;
           processed++;
-          console.log(`  ${rowId} -> ${vectors.length} vectors`);
+          console.log(`  ${rowId} -> ${vectors.length}/${chunks.length} vectors${chunkErrors > 0 ? ` (${chunkErrors} chunk errors)` : ''}`);
         } else {
           skipped++;
         }

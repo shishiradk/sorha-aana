@@ -15,31 +15,119 @@ export interface Env {
 export class RealEstateRAG {
   constructor(private env: Env) {}
 
-  async generateQueryEmbedding(query: string): Promise<number[]> {
+  /** Local geocoding: find avg lat/lng from our own property data using LIKE → SOUNDEX+prefix */
+  async localGeocode(locationPhrase: string): Promise<{ lat: number; lng: number } | null> {
+    try {
+      const words = locationPhrase.split(/\s+/).filter(w => w.length >= 3);
+      if (words.length === 0) return null;
+
+      // Strategy 1: LIKE match (exact substring)
+      // Strategy 2: SOUNDEX + prefix filter (fuzzy but constrained — avoids matching unrelated names)
+      for (const strategy of ['like', 'soundex_prefix'] as const) {
+        for (const table of [
+          { name: 'sellers', col: 'property_address' },
+          { name: 'rental_owners', col: 'address' }
+        ]) {
+          let where: string;
+          let params: any[];
+
+          if (strategy === 'like') {
+            where = words.map(() => `LOWER(${table.col}) LIKE LOWER(?)`).join(' AND ');
+            params = words.map(w => `%${w}%`);
+          } else {
+            // SOUNDEX for phonetic match + prefix variants to prevent false positives
+            // Handles aspiration ambiguity: "khaukhola" matches "Kaukhola" (kha↔kau)
+            const wordClauses: string[] = [];
+            params = [];
+            for (const w of words) {
+              const variants = prefixVariants(w);
+              const prefixOr = variants.map(() => `LOWER(${table.col}) LIKE LOWER(?)`).join(' OR ');
+              wordClauses.push(`(SOUNDEX(${table.col}) LIKE CONCAT('%', SOUNDEX(?), '%') AND (${prefixOr}))`);
+              params.push(w, ...variants);
+            }
+            where = wordClauses.join(' AND ');
+          }
+
+          const { results } = await queryAll(this.env,
+            `SELECT AVG(latitude) as lat, AVG(longitude) as lng, COUNT(*) as cnt
+             FROM ${table.name}
+             WHERE latitude IS NOT NULL AND latitude > 0
+             AND (${where})`,
+            params
+          );
+
+          const row = results[0] as any;
+          if (row && row.cnt > 0 && row.lat && row.lng) {
+            console.log(`Local geocode (${strategy}, ${table.name}): "${locationPhrase}" → ${row.cnt} properties, center ${row.lat}, ${row.lng}`);
+            return { lat: parseFloat(row.lat), lng: parseFloat(row.lng) };
+          }
+        }
+      }
+      return null;
+    } catch (err: any) {
+      console.warn('Local geocode failed:', err.message);
+      return null;
+    }
+  }
+
+  async generateQueryEmbedding(query: string): Promise<number[] | null> {
     try {
       const response = await this.env.AI.run('@cf/baai/bge-large-en-v1.5', {
         text: query
       });
-      return response.data?.[0] || new Array(1024).fill(0.01);
+      return response.data?.[0] || null;
     } catch {
-      return new Array(1024).fill(0.01);
+      console.warn('Embedding generation failed — falling back to text-only search');
+      return null;
     }
   }
 
-  async searchProperties(query: string, intent?: 'sale' | 'rent' | null): Promise<any[]> {
+  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }> {
     console.log(`Searching: "${query}" [intent: ${intent || 'any'}]`);
 
     // Detect location intent and geocode
     const locationPhrase = extractLocationFromQuery(query);
     let searchCoords: { lat: number; lng: number } | null = null;
+    let geocodeFailed = false;
+    let outsideCoverage = false;
     if (locationPhrase) {
       console.log(`Location detected: "${locationPhrase}" — geocoding...`);
-      searchCoords = await geocodeLocation(locationPhrase);
+
+      // Tier 0: Local geocoding — use average coords from our own DB data
+      searchCoords = await this.localGeocode(locationPhrase);
       if (searchCoords) {
-        console.log(`Geocoded to: ${searchCoords.lat}, ${searchCoords.lng}`);
+        console.log(`Local geocoded to: ${searchCoords.lat}, ${searchCoords.lng}`);
       } else {
-        console.log('Geocoding failed — falling back to semantic-only search');
+        // Tier 1-3: Fall back to Nominatim
+        searchCoords = await geocodeLocation(locationPhrase);
+        if (searchCoords) {
+          // Check if any property in our DB is within 50km of this location
+          const distExpr = haversineSQL('latitude', 'longitude');
+          try {
+            const { results: nearest } = await queryAll(this.env,
+              `SELECT MIN(${distExpr}) as min_dist FROM sellers WHERE latitude IS NOT NULL AND latitude != 0`,
+              [searchCoords.lat, searchCoords.lng, searchCoords.lat]);
+            const minDist = nearest?.[0]?.min_dist;
+            if (minDist != null && minDist > 50) {
+              console.log(`Location "${locationPhrase}" is ${minDist.toFixed(0)}km from nearest property — outside coverage`);
+              outsideCoverage = true;
+              searchCoords = null;
+            } else {
+              console.log(`Nominatim geocoded to: ${searchCoords.lat}, ${searchCoords.lng} (nearest property: ${minDist?.toFixed(1)}km)`);
+            }
+          } catch (e) {
+            console.log(`Nominatim geocoded to: ${searchCoords!.lat}, ${searchCoords!.lng}`);
+          }
+        } else {
+          console.log('Geocoding failed — falling back to text-only search');
+          geocodeFailed = true;
+        }
       }
+    }
+
+    // If location is outside our coverage area, short-circuit
+    if (outsideCoverage) {
+      return { results: [], locationPhrase, geocodeFailed, outsideCoverage: outsideCoverage };
     }
 
     // If we have coordinates, also get nearby property IDs from DB
@@ -93,15 +181,14 @@ export class RealEstateRAG {
       }
     }
 
+    const wantsAgent = /\bagent\b/i.test(query);
     const queryEmbedding = await this.generateQueryEmbedding(query);
 
-    const vectorResults = await this.env.VECTORIZE.query(queryEmbedding, {
-      topK: 30,
-      returnMetadata: 'all'
-    });
+    const vectorResults = queryEmbedding
+      ? await this.env.VECTORIZE.query(queryEmbedding, { topK: 30, returnMetadata: 'all' })
+      : { matches: [] };
 
     console.log(`Vector search returned ${vectorResults.matches.length} matches`);
-    if (vectorResults.matches.length === 0 && nearbySellerIds.length === 0 && nearbyRentalIds.length === 0) return [];
 
     // Group matches by source table and ID (deduplicate main + keyword chunks)
     const sellerIds: number[] = [];
@@ -111,19 +198,30 @@ export class RealEstateRAG {
     const agentIds: number[] = [];
     const scoreMap = new Map<string, number>();
 
+    // Store vector scores but DON'T add to ID lists yet if location search is active
+    // — vector-only results from unrelated locations will be filtered out
     for (const match of vectorResults.matches) {
       const meta = match.metadata || {} as any;
       const table = meta.source_table || 'sellers';
       const id = meta.source_id;
       if (!id) continue;
 
-      // If listing intent is specified, only include property listing tables
       if (intent === 'rent' && table !== 'rental_owners') continue;
       if (intent === 'sale' && table !== 'sellers') continue;
+      if (table === 'agents' && !wantsAgent) continue;
 
       const key = `${table}_${id}`;
       const existing = scoreMap.get(key) || 0;
       if (match.score > existing) scoreMap.set(key, match.score);
+
+      // When location is specified, don't add sellers/rentals from vector search alone
+      // They'll be added by text search + proximity below; vector scores are still recorded in scoreMap
+      if (locationPhrase && (table === 'sellers' || table === 'rental_owners')) {
+        // But if this ID is already in the proximity set, keep it (vector + location overlap)
+        const isNearby = (table === 'sellers' && nearbySellerIds.includes(id)) ||
+                         (table === 'rental_owners' && nearbyRentalIds.includes(id));
+        if (!isNearby) continue;
+      }
 
       if (table === 'sellers' && !sellerIds.includes(id)) sellerIds.push(id);
       if (table === 'rental_owners' && !rentalIds.includes(id)) rentalIds.push(id);
@@ -132,23 +230,118 @@ export class RealEstateRAG {
       if (table === 'agents' && !agentIds.includes(id)) agentIds.push(id);
     }
 
-    // Merge nearby property IDs (from distance search) into the ID lists
-    // These may not appear in vector results but are physically close
-    for (const id of nearbySellerIds) {
-      if (!sellerIds.includes(id)) sellerIds.push(id);
-      const key = `sellers_${id}`;
-      if (!scoreMap.has(key)) scoreMap.set(key, 0.5); // baseline score for proximity-only matches
+
+    // Step 1: Text-based location search (LIKE + SOUNDEX)
+    // For multi-word phrases: each word must match (AND logic) to avoid false positives
+    // For single-word: use OR with SOUNDEX for typo tolerance
+    let textMatchCount = 0;
+    const textMatchedIds = new Set<string>(); // Track IDs found by name match (guaranteed in that location)
+    if (locationPhrase) {
+      const likeKw = `%${locationPhrase}%`;
+      const fillerWords = new Set(['the', 'a', 'an', 'this', 'that', 'area', 'region', 'place', 'zone', 'side', 'part', 'some', 'any', 'all', 'list', 'show', 'find', 'get']);
+      const locationWords = locationPhrase.split(/\s+/).filter(w => w.length >= 3 && !fillerWords.has(w.toLowerCase()));
+
+      // Build fuzzy match conditions per address column
+      // SOUNDEX is always paired with a prefix filter (first 3 chars) to prevent false positives
+      const buildFuzzySQL = (addrCol: string): { sql: string; params: any[] } => {
+        if (locationWords.length > 1) {
+          // Multi-word: ALL words must appear in address (via LIKE or SOUNDEX+prefix per word)
+          const wordConditions = locationWords.map(w => {
+            const variants = prefixVariants(w);
+            const prefixOr = variants.map(() => `LOWER(${addrCol}) LIKE LOWER(?)`).join(' OR ');
+            return `(LOWER(${addrCol}) LIKE LOWER(?) OR (SOUNDEX(${addrCol}) LIKE CONCAT('%', SOUNDEX(?), '%') AND (${prefixOr})))`;
+          }).join(' AND ');
+          const wordParams = locationWords.flatMap(w => [`%${w}%`, w, ...prefixVariants(w)]);
+          return {
+            sql: `WHERE (LOWER(${addrCol}) LIKE LOWER(?) OR LOWER(city) LIKE LOWER(?) OR (${wordConditions}))`,
+            params: [likeKw, likeKw, ...wordParams]
+          };
+        } else {
+          // Single word: SOUNDEX + prefix variants to handle aspiration ambiguity
+          const variants = prefixVariants(locationPhrase);
+          const addrPrefixOr = variants.map(() => `LOWER(${addrCol}) LIKE LOWER(?)`).join(' OR ');
+          const cityPrefixOr = variants.map(() => `LOWER(city) LIKE LOWER(?)`).join(' OR ');
+          return {
+            sql: `WHERE (LOWER(${addrCol}) LIKE LOWER(?) OR LOWER(city) LIKE LOWER(?) OR (SOUNDEX(${addrCol}) = SOUNDEX(?) AND (${addrPrefixOr})) OR (SOUNDEX(city) = SOUNDEX(?) AND (${cityPrefixOr})))`,
+            params: [likeKw, likeKw, locationPhrase, ...variants, locationPhrase, ...variants]
+          };
+        }
+      };
+
+      if (intent !== 'rent') {
+        try {
+          const fuzzy = buildFuzzySQL('property_address');
+          const { results: textRows } = await queryAll(this.env,
+            `SELECT id FROM sellers ${fuzzy.sql} LIMIT 20`,
+            fuzzy.params
+          );
+          for (const r of textRows as any[]) {
+            if (!sellerIds.includes(r.id)) sellerIds.push(r.id);
+            const key = `sellers_${r.id}`;
+            if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+            textMatchedIds.add(key);
+          }
+          textMatchCount += (textRows as any[]).length;
+          console.log(`Text search: ${(textRows as any[]).length} sellers for "${locationPhrase}"`);
+        } catch (err: any) {
+          console.warn('Text seller search failed:', err.message);
+        }
+      }
+      if (intent !== 'sale') {
+        try {
+          const fuzzy = buildFuzzySQL('address');
+          const { results: textRows } = await queryAll(this.env,
+            `SELECT id FROM rental_owners ${fuzzy.sql} LIMIT 20`,
+            fuzzy.params
+          );
+          for (const r of textRows as any[]) {
+            if (!rentalIds.includes(r.id)) rentalIds.push(r.id);
+            const key = `rental_owners_${r.id}`;
+            if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+            textMatchedIds.add(key);
+          }
+          textMatchCount += (textRows as any[]).length;
+          console.log(`Text search: ${(textRows as any[]).length} rentals for "${locationPhrase}"`);
+        } catch (err: any) {
+          console.warn('Text rental search failed:', err.message);
+        }
+      }
     }
-    for (const id of nearbyRentalIds) {
-      if (!rentalIds.includes(id)) rentalIds.push(id);
-      const key = `rental_owners_${id}`;
-      if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
+
+    // Step 2: Geocoding fallback — only run if text search returned few results (< 3)
+    // Finds physically nearby properties even if their address name differs
+    if (locationPhrase && textMatchCount < 3 && searchCoords) {
+      console.log(`Text matched only ${textMatchCount} — expanding with geocoding radius`);
+      for (const id of nearbySellerIds) {
+        if (!sellerIds.includes(id)) sellerIds.push(id);
+        const key = `sellers_${id}`;
+        if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
+      }
+      for (const id of nearbyRentalIds) {
+        if (!rentalIds.includes(id)) rentalIds.push(id);
+        const key = `rental_owners_${id}`;
+        if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
+      }
+    } else if (searchCoords) {
+      // Even with text results, still include nearby properties for distance display
+      for (const id of nearbySellerIds) {
+        if (!sellerIds.includes(id)) {
+          sellerIds.push(id);
+          if (!scoreMap.has(`sellers_${id}`)) scoreMap.set(`sellers_${id}`, 0.5);
+        }
+      }
+      for (const id of nearbyRentalIds) {
+        if (!rentalIds.includes(id)) {
+          rentalIds.push(id);
+          if (!scoreMap.has(`rental_owners_${id}`)) scoreMap.set(`rental_owners_${id}`, 0.5);
+        }
+      }
     }
 
     const hasProximitySearch = searchCoords !== null;
 
     // Limit to top 10 unique properties
-    const results: any[] = [];
+    let results: any[] = [];
 
     // Fetch sellers
     if (sellerIds.length > 0) {
@@ -358,31 +551,96 @@ export class RealEstateRAG {
       } catch { /* agents table may not exist */ }
     }
 
+    // Extract desired property type from query
+    const queryPropType = extractPropertyType(query);
+
+    // Scoring helpers
+    const typeScore = (p: any): number => {
+      if (!queryPropType) return 1;
+      const pType = (p.property_type || '').toLowerCase();
+      if (pType === queryPropType) return 1;
+      return 0.4;
+    };
+
+    const priceScore = (p: any): number => {
+      if (!parsed?.minNPR && !parsed?.maxNPR) return 1;
+      const price = p.price_npr || 0;
+      if (!price) return 0.6;
+      if (parsed.minNPR && price < parsed.minNPR) return 0.3;
+      if (parsed.maxNPR && price > parsed.maxNPR) return 0.3;
+      return 1;
+    };
+
+    const bedroomScore = (p: any): number => {
+      if (!parsed?.bedrooms) return 1;
+      const beds = p.bedrooms;
+      if (!beds) return 0.7;
+      const diff = Math.abs(beds - parsed.bedrooms);
+      return Math.max(0.3, 1 - 0.15 * diff);
+    };
+
+    // Exponential proximity decay: sharp boost for very close, gradual drop-off farther
+    // Text-matched results (found by address name) get full proximity score even without coordinates
+    const proxScore = (p: any): number => {
+      const key = `${p.source_table}_${p.id}`;
+      if (textMatchedIds.has(key)) return 1.0; // Name match = confirmed in that location
+      if (p.distance_km != null) return Math.exp(-p.distance_km / 3);
+      return 0;
+    };
+
+    // If we have text-matched results for a specific location, filter out
+    // proximity-only results that don't actually match the location name
+    // (prevents "properties in tanahun" from showing random Kaski nearby results)
+    if (locationPhrase && textMatchedIds.size > 0) {
+      results = results.filter(p => {
+        const key = `${p.source_table}_${p.id}`;
+        if (textMatchedIds.has(key)) return true; // text-matched — keep
+        // Keep proximity results only if their address contains the location word
+        const addr = (p.location || '').toLowerCase();
+        const locWords = locationPhrase.toLowerCase().split(/\s+/);
+        return locWords.some(w => w.length >= 3 && addr.includes(w));
+      });
+    }
+
     // Sort results
     if (hasProximitySearch) {
-      // When proximity search is active: prioritize nearby + semantically relevant
-      // Score = 0.4 * similarity + 0.6 * proximity (closer = higher)
-      return results.sort((a, b) => {
-        const aProx = a.distance_km != null ? Math.max(0, 1 - a.distance_km / 5) : 0;
-        const bProx = b.distance_km != null ? Math.max(0, 1 - b.distance_km / 5) : 0;
-        const aScore = 0.4 * a.similarity + 0.6 * aProx;
-        const bScore = 0.4 * b.similarity + 0.6 * bProx;
+      results.sort((a, b) => {
+        const aScore = 0.25 * a.similarity + 0.35 * proxScore(a) + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a);
+        const bScore = 0.25 * b.similarity + 0.35 * proxScore(b) + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b);
+        return bScore - aScore;
+      });
+    } else {
+      // Default: sort by similarity + type + price/bedroom fit
+      results.sort((a, b) => {
+        const aScore = 0.6 * a.similarity + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a);
+        const bScore = 0.6 * b.similarity + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b);
         return bScore - aScore;
       });
     }
 
-    // Default: sort by similarity score
-    return results.sort((a, b) => b.similarity - a.similarity);
+    return { results, locationPhrase, geocodeFailed, outsideCoverage };
   }
 
-  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null): Promise<string> {
+  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }): Promise<string> {
     if (properties.length === 0) {
+      // Location is outside Kaski district — we only cover Kaski
+      if (locationCtx?.locationPhrase && locationCtx.outsideCoverage) {
+        return `Sorry, "${locationCtx.locationPhrase}" is outside our current coverage area. We don't have property listings for that location. Try searching in areas where we have data, like Pokhara and nearby districts.`;
+      }
+      // Location was detected but couldn't be found in DB or map
+      if (locationCtx?.locationPhrase && locationCtx.geocodeFailed) {
+        return `We couldn't find any properties for "${locationCtx.locationPhrase}". This location may be outside our coverage area, or we may not recognize the name. Could you provide more details — like the ward number, a nearby landmark, or a well-known nearby area? For example: "property near ward 5" or "house near Prithvi Chowk".`;
+      }
+      // Location was found on map but no properties nearby
+      if (locationCtx?.locationPhrase && !locationCtx.geocodeFailed) {
+        return `We don't have any properties listed in "${locationCtx.locationPhrase}" yet. Try searching a nearby area, or check back later as new listings are added regularly.`;
+      }
       if (intent === 'rent') return "I couldn't find any rental properties matching your criteria. We may not have rentals in that area yet — try a broader location, or check our sale listings.";
       if (intent === 'sale') return "I couldn't find any properties for sale matching your criteria. Try adjusting your budget, location, or property type.";
       return "I couldn't find any properties matching your criteria in our database. Try adjusting your budget, location, or property type.";
     }
 
-    const context = properties.slice(0, 5).map((p, i) => {
+    const context = properties.slice(0, 10).map((p, i) => {
       const parts = [
         `${i + 1}. ${p.title}`,
         p.location ? `   Location: ${p.location}` : null,
@@ -408,23 +666,35 @@ export class RealEstateRAG {
       ? 'The user is looking to BUY/PURCHASE a property. All results below are for sale.'
       : 'Results include both sale and rental listings — note the listing type for each.';
 
-    const prompt = `You are Sorha Aana, a smart real estate assistant for Nepal.
-A user asked: "${question}"
+    const intentParts: string[] = [];
+    if (parsed?.bedrooms) intentParts.push(`${parsed.bedrooms} bedroom(s)`);
+    if (parsed?.maxNPR) intentParts.push(`budget up to NPR ${parsed.maxNPR.toLocaleString()}`);
+    if (parsed?.minNPR && !parsed?.maxNPR) intentParts.push(`budget from NPR ${parsed.minNPR.toLocaleString()}`);
+    const parsedNote = intentParts.length ? `Parsed user filters: ${intentParts.join(', ')}.` : '';
 
-Context: ${listingTypeNote}
+    const prompt = `You are Sorha Aana, a real estate assistant for Kaski district, Nepal.
 
-Here are the top matching properties from the Sorha Aana database:
+User query: "${question}"
+${listingTypeNote}
+${parsedNote}
 
+Matching properties from the database:
 ${context}
 
-RULES:
-1. Use ONLY the data above -- never invent details.
-2. Detect the user's language (English, Nepali, or Nenglish mix) and reply in the SAME style.
-3. Highlight the 2-3 best matches and explain why they fit.
-4. Show prices exactly as listed.
-5. Be concise and professional.
-6. Never use emojis.
-7. At the end cite the source table and record ID for each property mentioned.`;
+INSTRUCTIONS:
+- Use ONLY the property data above. Never invent or assume any details.
+- Reply in English only.
+- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).
+- If price or bedroom filters were parsed above, explicitly state whether each property fits.
+- If distance data is available, mention how far each property is from the searched location.
+- If a property is within 1 km, note it as "very close".
+- Show prices exactly as listed. Do not convert or estimate.
+- If the user asked for rentals but a property is for sale (or vice versa), mention that clearly.
+- If no properties are a good fit, say so and suggest how to adjust the search.
+- If the user mention the location that is not mentioned in the db then ask answer that the location is not mentioned .
+- Be concise. Do not repeat the same property details twice.
+- Never use emojis.
+- End with a short list: source table and ID for each property mentioned.`;
 
     try {
       const response = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
@@ -439,8 +709,9 @@ RULES:
 
   async query(question: string): Promise<any> {
     const intent = detectListingIntent(question);
-    const properties = await this.searchProperties(question, intent);
-    const generatedAnswer = await this.generateAnswer(question, properties, intent);
+    const parsed = extractParsedIntent(question);
+    const { results: properties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed);
+    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage });
 
     return {
       query: question,
@@ -453,6 +724,31 @@ RULES:
 }
 
 // -- Utility functions (module-level) --
+
+/**
+ * Generate prefix variants for fuzzy matching Nepali romanized words.
+ * Handles aspiration ambiguity: kh↔k, bh↔b, ch↔c, th↔t, dh↔d, ph↔p, gh↔g, sh↔s
+ * Returns SQL LIKE patterns to match any variant.
+ */
+function prefixVariants(word: string): string[] {
+  const w = word.toLowerCase();
+  const base = w.substring(0, 3);
+  const variants = new Set<string>([`%${base}%`]);
+
+  // Aspiration pairs: "kh"↔"k", "bh"↔"b", etc.
+  const aspirated = ['kh', 'bh', 'ch', 'th', 'dh', 'ph', 'gh', 'sh'];
+  for (const asp of aspirated) {
+    const plain = asp[0]; // e.g. 'k' from 'kh'
+    if (w.startsWith(asp)) {
+      // Word starts with aspirated form → also try plain (e.g. "kha" → "ka")
+      variants.add(`%${plain}${w.substring(asp.length, asp.length + 2)}%`);
+    } else if (w.startsWith(plain) && !aspirated.some(a => w.startsWith(a))) {
+      // Word starts with plain consonant (not already aspirated) → also try aspirated
+      variants.add(`%${asp}${w.substring(plain.length, plain.length + 1)}%`);
+    }
+  }
+  return Array.from(variants);
+}
 
 function parseJsonField(field: any): string[] {
   if (!field) return [];
@@ -486,8 +782,16 @@ function formatAreaDisplay(area: string | null, unit: string | null): string {
 
 function parseBHK(layout: string | null): number | null {
   if (!layout) return null;
-  const match = layout.match(/(\d+)\s*(?:BHK|R)/i);
-  return match ? parseInt(match[1]) : null;
+  // "3BHK", "3 BHK", "3R"
+  const bhkMatch = layout.match(/(\d+)\s*(?:BHK|R)\b/i);
+  if (bhkMatch) return parseInt(bhkMatch[1]);
+  // "2B1K" format (2 bedrooms, 1 kitchen)
+  const bkMatch = layout.match(/(\d+)\s*B\s*\d+\s*K/i);
+  if (bkMatch) return parseInt(bkMatch[1]);
+  // "2 Bedroom", "2 Bed"
+  const bedMatch = layout.match(/(\d+)\s*(?:bedrooms?|bed)\b/i);
+  if (bedMatch) return parseInt(bedMatch[1]);
+  return null;
 }
 
 function detectListingIntent(query: string): 'sale' | 'rent' | null {
@@ -499,4 +803,76 @@ function detectListingIntent(query: string): 'sale' | 'rent' | null {
   if (hasRent && !hasSale) return 'rent';
   if (hasSale && !hasRent) return 'sale';
   return null;
+}
+
+function extractPropertyType(query: string): string | null {
+  const lower = query.toLowerCase();
+  const typeMap: Record<string, string> = {
+    'house': 'house', 'ghar': 'house',
+    'land': 'land', 'jagga': 'land',
+    'flat': 'flat',
+    'apartment': 'apartment',
+    'room': 'room', 'kotha': 'room',
+    'shop': 'shop', 'pasal': 'shop',
+    'shutter': 'shutter',
+    'office': 'office_space',
+    'hotel': 'hotel',
+    'bungalow': 'bungalow',
+    'godown': 'godown',
+    'restaurant': 'restaurant',
+  };
+  for (const [keyword, type] of Object.entries(typeMap)) {
+    if (lower.includes(keyword)) return type;
+  }
+  return null;
+}
+
+export interface ParsedIntent {
+  minNPR: number | null;
+  maxNPR: number | null;
+  bedrooms: number | null;
+}
+
+export function extractParsedIntent(query: string): ParsedIntent {
+  const lower = query.toLowerCase();
+
+  // Price range extraction
+  const unitMult: Record<string, number> = {
+    lakh: 100000, lakhs: 100000,
+    crore: 10000000, crores: 10000000,
+    thousand: 1000, k: 1000,
+  };
+  const toNPR = (num: string, unit: string) => parseFloat(num) * (unitMult[unit.toLowerCase()] ?? 1);
+
+  let minNPR: number | null = null;
+  let maxNPR: number | null = null;
+
+  const rangeMatch = lower.match(/(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)\s*(?:to|and|-)\s*(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+  if (rangeMatch) {
+    minNPR = toNPR(rangeMatch[1], rangeMatch[2]);
+    maxNPR = toNPR(rangeMatch[3], rangeMatch[4]);
+  } else {
+    const underMatch = lower.match(/(?:under|below|less than|upto|up to|max|maximum)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+    if (underMatch) maxNPR = toNPR(underMatch[1], underMatch[2]);
+
+    const overMatch = lower.match(/(?:above|over|more than|minimum|min|at least)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|crores?|thousand|k)/);
+    if (overMatch) minNPR = toNPR(overMatch[1], overMatch[2]);
+  }
+
+  // Bedroom extraction
+  let bedrooms: number | null = null;
+  const bedMatch = lower.match(/(\d+)\s*(?:bhk|bedroom[s]?|bed\s*room[s]?)/);
+  if (bedMatch) {
+    bedrooms = parseInt(bedMatch[1]);
+  } else {
+    const wordNums: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+    for (const [word, num] of Object.entries(wordNums)) {
+      if (lower.includes(`${word} bedroom`) || lower.includes(`${word} bhk`)) {
+        bedrooms = num;
+        break;
+      }
+    }
+  }
+
+  return { minNPR, maxNPR, bedrooms };
 }
