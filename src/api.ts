@@ -2,18 +2,14 @@ import { Env } from './index';
 import { queryAll, queryOne } from './db-utils';
 
 export class RealEstateAPI {
-    constructor(private env: Env) {}
+    constructor(private env: Env, private corsHeaders: Record<string, string>) {}
 
     async handleRequest(request: Request): Promise<Response> {
         const url = new URL(request.url);
         const path = url.pathname;
         const method = request.method;
 
-        const corsHeaders = {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        };
+        const corsHeaders = this.corsHeaders;
 
         // GET /api/properties — list sellers + rental_owners
         if (path === '/api/properties' && method === 'GET') {
@@ -63,7 +59,8 @@ export class RealEstateAPI {
         const idMatch = path.match(/^\/api\/properties\/([^/]+)$/);
         if (idMatch && method === 'GET') {
             const id = idMatch[1];
-            const table = url.searchParams.get('table') || 'sellers';
+            const tableParam = url.searchParams.get('table') || 'sellers';
+            const table = ['sellers', 'rental_owners'].includes(tableParam) ? tableParam : 'sellers';
 
             try {
                 let property: any;

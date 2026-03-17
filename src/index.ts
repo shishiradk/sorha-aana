@@ -465,9 +465,9 @@ export default {
         }
       }
 
-      // REST API Delegate
+      // REST API Delegate (read-only, no auth needed)
       if (path.startsWith('/api/properties')) {
-        const api = new RealEstateAPI(env);
+        const api = new RealEstateAPI(env, corsHeaders);
         return api.handleRequest(request);
       }
 

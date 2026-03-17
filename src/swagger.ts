@@ -10,6 +10,15 @@ export const openApiSpec = {
             "url": "/"
         }
     ],
+    "components": {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Admin API key. Pass as: Authorization: Bearer <your-key>"
+            }
+        }
+    },
     "paths": {
         "/search": {
             "post": {
@@ -96,6 +105,172 @@ export const openApiSpec = {
                 }
             }
         },
+        "/status": {
+            "get": {
+                "summary": "System Status",
+                "description": "Check Vectorize index status (vector count, dimensions).",
+                "responses": {
+                    "200": {
+                        "description": "Status info",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": { "type": "string" },
+                                        "vectors": { "type": "integer" },
+                                        "dimensions": { "type": "integer" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/vectorize": {
+            "post": {
+                "summary": "Run Vectorization",
+                "description": "Trigger incremental vectorization of properties. Admin only.",
+                "security": [{ "BearerAuth": [] }],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "incremental": { "type": "boolean", "default": true, "description": "Only process new/changed properties" }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": { "description": "Vectorization started" },
+                    "401": { "description": "Unauthorized" }
+                }
+            }
+        },
+        "/api/vectorize/status": {
+            "get": {
+                "summary": "Vectorization Status",
+                "description": "Get vectorization progress (total, vectorized, pending, failed).",
+                "responses": {
+                    "200": {
+                        "description": "Vectorization stats",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "total_properties": { "type": "integer" },
+                                        "vectorized": { "type": "integer" },
+                                        "pending": { "type": "integer" },
+                                        "failed": { "type": "integer" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/vectorize/full": {
+            "post": {
+                "summary": "Full Re-vectorization",
+                "description": "Re-vectorize all properties from scratch. Admin only.",
+                "security": [{ "BearerAuth": [] }],
+                "responses": {
+                    "200": { "description": "Full vectorization started" },
+                    "401": { "description": "Unauthorized" }
+                }
+            }
+        },
+        "/api/geocode/batch": {
+            "post": {
+                "summary": "Batch Geocode",
+                "description": "Geocode properties that don't have coordinates yet. Admin only.",
+                "security": [{ "BearerAuth": [] }],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "batch_size": { "type": "integer", "default": 20, "maximum": 25, "description": "Number of properties to geocode (max 25)" }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": { "description": "Geocoding results" },
+                    "401": { "description": "Unauthorized" }
+                }
+            }
+        },
+        "/api/geocode/update": {
+            "post": {
+                "summary": "Update Coordinates",
+                "description": "Manually update lat/lng for specific properties. Admin only.",
+                "security": [{ "BearerAuth": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "updates": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "table": { "type": "string", "enum": ["sellers", "rental_owners"] },
+                                                "id": { "type": "integer" },
+                                                "lat": { "type": "number" },
+                                                "lng": { "type": "number" }
+                                            },
+                                            "required": ["table", "id", "lat", "lng"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": { "description": "Update results" },
+                    "401": { "description": "Unauthorized" }
+                }
+            }
+        },
+        "/api/query": {
+            "post": {
+                "summary": "Run SQL Query",
+                "description": "Execute a read-only SQL query against the database. Admin only.",
+                "security": [{ "BearerAuth": [] }],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "sql": { "type": "string", "example": "SELECT COUNT(*) FROM sellers" }
+                                },
+                                "required": ["sql"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": { "description": "Query results" },
+                    "401": { "description": "Unauthorized" },
+                    "403": { "description": "Query not allowed (write operations blocked)" }
+                }
+            }
+        }
     }
 };
 
