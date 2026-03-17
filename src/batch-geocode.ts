@@ -137,7 +137,7 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
       await queryExecute(env,
         'UPDATE sellers SET latitude = 0, longitude = 0 WHERE id = ?',
         [row.id]
-      ).catch(() => {});
+      ).catch((e: any) => console.warn('Failed to mark seller geocode failure:', e.message));
       failed++;
       results.push({ table: 'sellers', id: row.id, address: addressStr, status: 'failed' });
     }
@@ -211,7 +211,7 @@ export async function batchGeocode(env: any, batchSize: number = 20): Promise<Ba
         await queryExecute(env,
           'UPDATE rental_owners SET latitude = 0, longitude = 0 WHERE id = ?',
           [row.id]
-        ).catch(() => {});
+        ).catch((e: any) => console.warn('Failed to mark rental geocode failure:', e.message));
         failed++;
         results.push({ table: 'rental_owners', id: row.id, address: addressStr, status: 'failed' });
       }

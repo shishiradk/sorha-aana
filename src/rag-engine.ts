@@ -191,11 +191,11 @@ export class RealEstateRAG {
     console.log(`Vector search returned ${vectorResults.matches.length} matches`);
 
     // Group matches by source table and ID (deduplicate main + keyword chunks)
-    const sellerIds: number[] = [];
-    const rentalIds: number[] = [];
-    const buyerIds: number[] = [];
-    const tenantIds: number[] = [];
-    const agentIds: number[] = [];
+    const sellerIds = new Set<number>();
+    const rentalIds = new Set<number>();
+    const buyerIds = new Set<number>();
+    const tenantIds = new Set<number>();
+    const agentIds = new Set<number>();
     const scoreMap = new Map<string, number>();
 
     // Store vector scores but DON'T add to ID lists yet if location search is active
@@ -223,11 +223,11 @@ export class RealEstateRAG {
         if (!isNearby) continue;
       }
 
-      if (table === 'sellers' && !sellerIds.includes(id)) sellerIds.push(id);
-      if (table === 'rental_owners' && !rentalIds.includes(id)) rentalIds.push(id);
-      if (table === 'buyers' && !buyerIds.includes(id)) buyerIds.push(id);
-      if (table === 'tenants' && !tenantIds.includes(id)) tenantIds.push(id);
-      if (table === 'agents' && !agentIds.includes(id)) agentIds.push(id);
+      if (table === 'sellers') sellerIds.add(id);
+      if (table === 'rental_owners') rentalIds.add(id);
+      if (table === 'buyers') buyerIds.add(id);
+      if (table === 'tenants') tenantIds.add(id);
+      if (table === 'agents') agentIds.add(id);
     }
 
 
@@ -276,7 +276,7 @@ export class RealEstateRAG {
             fuzzy.params
           );
           for (const r of textRows as any[]) {
-            if (!sellerIds.includes(r.id)) sellerIds.push(r.id);
+            sellerIds.add(r.id);
             const key = `sellers_${r.id}`;
             if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
             textMatchedIds.add(key);
@@ -295,7 +295,7 @@ export class RealEstateRAG {
             fuzzy.params
           );
           for (const r of textRows as any[]) {
-            if (!rentalIds.includes(r.id)) rentalIds.push(r.id);
+            rentalIds.add(r.id);
             const key = `rental_owners_${r.id}`;
             if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
             textMatchedIds.add(key);
@@ -313,28 +313,24 @@ export class RealEstateRAG {
     if (locationPhrase && textMatchCount < 3 && searchCoords) {
       console.log(`Text matched only ${textMatchCount} — expanding with geocoding radius`);
       for (const id of nearbySellerIds) {
-        if (!sellerIds.includes(id)) sellerIds.push(id);
+        sellerIds.add(id);
         const key = `sellers_${id}`;
         if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
       }
       for (const id of nearbyRentalIds) {
-        if (!rentalIds.includes(id)) rentalIds.push(id);
+        rentalIds.add(id);
         const key = `rental_owners_${id}`;
         if (!scoreMap.has(key)) scoreMap.set(key, 0.5);
       }
     } else if (searchCoords) {
       // Even with text results, still include nearby properties for distance display
       for (const id of nearbySellerIds) {
-        if (!sellerIds.includes(id)) {
-          sellerIds.push(id);
-          if (!scoreMap.has(`sellers_${id}`)) scoreMap.set(`sellers_${id}`, 0.5);
-        }
+        sellerIds.add(id);
+        if (!scoreMap.has(`sellers_${id}`)) scoreMap.set(`sellers_${id}`, 0.5);
       }
       for (const id of nearbyRentalIds) {
-        if (!rentalIds.includes(id)) {
-          rentalIds.push(id);
-          if (!scoreMap.has(`rental_owners_${id}`)) scoreMap.set(`rental_owners_${id}`, 0.5);
-        }
+        rentalIds.add(id);
+        if (!scoreMap.has(`rental_owners_${id}`)) scoreMap.set(`rental_owners_${id}`, 0.5);
       }
     }
 
@@ -344,8 +340,8 @@ export class RealEstateRAG {
     let results: any[] = [];
 
     // Fetch sellers
-    if (sellerIds.length > 0) {
-      const ids = sellerIds.slice(0, 10);
+    if (sellerIds.size > 0) {
+      const ids = [...sellerIds].slice(0, 10);
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT s.*, d.name as district_name, m.name as municipality_name,
@@ -406,8 +402,8 @@ export class RealEstateRAG {
     }
 
     // Fetch rentals
-    if (rentalIds.length > 0) {
-      const ids = rentalIds.slice(0, 10);
+    if (rentalIds.size > 0) {
+      const ids = [...rentalIds].slice(0, 10);
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT ro.*, d.name as district_name, m.name as municipality_name,
@@ -465,8 +461,8 @@ export class RealEstateRAG {
     }
 
     // Fetch buyers
-    if (buyerIds.length > 0) {
-      const ids = buyerIds.slice(0, 10);
+    if (buyerIds.size > 0) {
+      const ids = [...buyerIds].slice(0, 10);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -493,12 +489,14 @@ export class RealEstateRAG {
             similarity: scoreMap.get(`buyers_${row.id}`) || 0,
           });
         }
-      } catch { /* buyers table may not exist */ }
+      } catch (err: any) {
+        if (!err?.message?.includes('doesn\'t exist')) console.warn('Buyers fetch error:', err.message);
+      }
     }
 
     // Fetch tenants
-    if (tenantIds.length > 0) {
-      const ids = tenantIds.slice(0, 10);
+    if (tenantIds.size > 0) {
+      const ids = [...tenantIds].slice(0, 10);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -525,12 +523,14 @@ export class RealEstateRAG {
             similarity: scoreMap.get(`tenants_${row.id}`) || 0,
           });
         }
-      } catch { /* tenants table may not exist */ }
+      } catch (err: any) {
+        if (!err?.message?.includes('doesn\'t exist')) console.warn('Tenants fetch error:', err.message);
+      }
     }
 
     // Fetch agents
-    if (agentIds.length > 0) {
-      const ids = agentIds.slice(0, 10);
+    if (agentIds.size > 0) {
+      const ids = [...agentIds].slice(0, 10);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -548,7 +548,9 @@ export class RealEstateRAG {
             similarity: scoreMap.get(`agents_${row.id}`) || 0,
           });
         }
-      } catch { /* agents table may not exist */ }
+      } catch (err: any) {
+        if (!err?.message?.includes('doesn\'t exist')) console.warn('Agents fetch error:', err.message);
+      }
     }
 
     // Extract desired property type from query
@@ -607,7 +609,7 @@ export class RealEstateRAG {
     const storeyScore = (p: any): number => {
       if (!parsed?.storeys) return 1;
       const s = parseFloat(p.house_storey);
-      if (!s) return 0.7;
+      if (isNaN(s)) return 0.7;
       const diff = Math.abs(s - parsed.storeys);
       return Math.max(0.3, 1 - 0.2 * diff);
     };
@@ -652,24 +654,33 @@ export class RealEstateRAG {
     };
 
     // When a location is specified, filter results to only those relevant to that location
+    // Word-boundary location match helper — prevents "new" matching "newari"
+    const addrContainsLocation = (addr: string, locWords: string[]): boolean => {
+      const lowerAddr = addr.toLowerCase();
+      return locWords.some(w => {
+        if (w.length < 3) return false;
+        // Use word boundary check: match as separate word or at start/end of comma-separated segment
+        const idx = lowerAddr.indexOf(w);
+        if (idx === -1) return false;
+        const before = idx === 0 ? ' ' : lowerAddr[idx - 1];
+        const after = idx + w.length >= lowerAddr.length ? ' ' : lowerAddr[idx + w.length];
+        return /[\s,\-]/.test(before) || idx === 0 ? (/[\s,\-]/.test(after) || idx + w.length === lowerAddr.length) : false;
+      });
+    };
+
     if (locationPhrase) {
       if (textMatchedIds.size > 0) {
         // We have text matches — keep those + proximity results that contain the location word
+        const locWords = locationPhrase.toLowerCase().split(/\s+/);
         results = results.filter(p => {
           const key = `${p.source_table}_${p.id}`;
           if (textMatchedIds.has(key)) return true;
-          const addr = (p.location || '').toLowerCase();
-          const locWords = locationPhrase.toLowerCase().split(/\s+/);
-          return locWords.some(w => w.length >= 3 && addr.includes(w));
+          return addrContainsLocation(p.location || '', locWords);
         });
       } else if (geocodeFailed) {
         // Location specified but not found anywhere — only keep results whose address contains the location word
-        // (prevents random vector results from showing up for unknown locations)
         const locWords = locationPhrase.toLowerCase().split(/\s+/);
-        results = results.filter(p => {
-          const addr = (p.location || '').toLowerCase();
-          return locWords.some(w => w.length >= 3 && addr.includes(w));
-        });
+        results = results.filter(p => addrContainsLocation(p.location || '', locWords));
       } else if (searchCoords) {
         // Location geocoded but no text matches — keep only proximity results (within 5km)
         results = results.filter(p => p.distance_km != null && p.distance_km <= 5);
@@ -834,17 +845,24 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
     }
   }
 
-  async query(question: string): Promise<any> {
+  async query(question: string, options?: { limit?: number; offset?: number }): Promise<any> {
     const intent = detectListingIntent(question);
     const parsed = extractParsedIntent(question);
-    const { results: properties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed);
+    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed);
+
+    const limit = Math.min(options?.limit || 20, 50);
+    const offset = options?.offset || 0;
+    const properties = allProperties.slice(offset, offset + limit);
+
     const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage });
 
     return {
       query: question,
       answer: generatedAnswer,
       properties,
-      total_results: properties.length,
+      total_results: allProperties.length,
+      page_size: limit,
+      page_offset: offset,
       listing_intent: intent || 'any'
     };
   }
@@ -977,7 +995,10 @@ export function extractParsedIntent(query: string): ParsedIntent {
     thousand: 1000, k: 1000,
   };
   const priceUnitPattern = 'lakhs?|lacs?|crores?|crs?|thousand|[klL]\\b';
-  const toNPR = (num: string, unit: string) => parseFloat(num) * (unitMult[unit.toLowerCase()] ?? 1);
+  const toNPR = (num: string, unit: string): number | null => {
+    const val = parseFloat(num) * (unitMult[unit.toLowerCase()] ?? 1);
+    return isNaN(val) ? null : val;
+  };
 
   let minNPR: number | null = null;
   let maxNPR: number | null = null;
@@ -998,7 +1019,8 @@ export function extractParsedIntent(query: string): ParsedIntent {
   let bedrooms: number | null = null;
   const bedMatch = lower.match(/(\d+)\s*(?:bhk|bedroom[s]?|bed\s*room[s]?)/);
   if (bedMatch) {
-    bedrooms = parseInt(bedMatch[1]);
+    const v = parseInt(bedMatch[1]);
+    if (!isNaN(v)) bedrooms = v;
   } else {
     const wordNums: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5 };
     for (const [word, num] of Object.entries(wordNums)) {
@@ -1021,7 +1043,10 @@ export function extractParsedIntent(query: string): ParsedIntent {
     'sq ft': 1 / 5476, 'sqft': 1 / 5476, 'sq feet': 1 / 5476,
     'sq m': 1 / 508.74, 'sqm': 1 / 508.74,
   };
-  const toRopani = (num: string, unit: string): number => parseFloat(num) * (areaUnits[unit.toLowerCase()] ?? 1);
+  const toRopani = (num: string, unit: string): number | null => {
+    const val = parseFloat(num) * (areaUnits[unit.toLowerCase()] ?? 1);
+    return isNaN(val) ? null : val;
+  };
 
   const areaRange = lower.match(/(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
   if (areaRange) {
@@ -1039,8 +1064,10 @@ export function extractParsedIntent(query: string): ParsedIntent {
       const plainArea = lower.match(/(\d+(?:\.\d+)?)\s*(ropani|aana[s]?|dhur[s]?|bigha[s]?|kattha[s]?|sq\s*ft|sqft|sq\s*m|sqm)/);
       if (plainArea) {
         const target = toRopani(plainArea[1], plainArea[2]);
-        minArea = target * 0.7;
-        maxArea = target * 1.3;
+        if (target != null) {
+          minArea = target * 0.7;
+          maxArea = target * 1.3;
+        }
       }
     }
   }
@@ -1048,7 +1075,7 @@ export function extractParsedIntent(query: string): ParsedIntent {
   // Storeys extraction
   let storeys: number | null = null;
   const storeyMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:storey[s]?|story|stories|floor[s]?|tale)/);
-  if (storeyMatch) storeys = parseFloat(storeyMatch[1]);
+  if (storeyMatch) { const v = parseFloat(storeyMatch[1]); if (!isNaN(v)) storeys = v; }
 
   // Facing extraction
   let facing: string | null = null;

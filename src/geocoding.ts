@@ -13,7 +13,15 @@ async function tryNominatim(query: string, params: string): Promise<{ lat: numbe
   const url = `https://nominatim.openstreetmap.org/search?` +
     `q=${encodeURIComponent(query)}&format=json&limit=1${params}`;
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': 'sorha-aana-worker/1.0' } });
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'sorha-aana-worker/1.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 429) {
+      console.warn('Nominatim rate limited (429) — backing off 3s');
+      await sleepMs(3000);
+      return null;
+    }
     if (!res.ok) return null;
     const data = await res.json() as any[];
     if (!data || data.length === 0) return null;
@@ -21,7 +29,8 @@ async function tryNominatim(query: string, params: string): Promise<{ lat: numbe
     const lng = parseFloat(data[0].lon);
     if (isNaN(lat) || isNaN(lng)) return null;
     return { lat, lng };
-  } catch {
+  } catch (err: any) {
+    console.warn('Nominatim fetch error:', err.message);
     return null;
   }
 }
@@ -69,7 +78,7 @@ export async function geocodeLocation(
  * Returns the location name to geocode, or null if no location intent
  */
 export function extractLocationFromQuery(query: string): string | null {
-  const stopWords = /\b(?:with|under|below|above|over|more|less|upto|up\s+to|within|budget|price|cost|rent|sale|buy|sell|house|land|flat|room|apartment|property|properties|bedroom|bhk|ropani|aana|sqft|sq|storey|floor|facing|furnished|road|commercial|residential|agriculture|\d)/i;
+  const stopWords = /\b(?:with|under|below|above|over|more|less|upto|up\s+to|within|budget|price|cost|rent|sale|buy|sell|house|land|flat|room|apartment|property|properties|bedroom|bhk|ropani|aana|sqft|sq|storey|floor|facing|furnished|road|commercial|residential|agriculture|\d+\s*(?:bhk|bedroom|ropani|aana|sqft|sq|lakh|crore|storey|floor))/i;
   // Filler words to strip from extracted location phrases
   const fillerWords = new Set(['the', 'a', 'an', 'this', 'that', 'area', 'region', 'place', 'zone', 'side', 'part', 'some', 'any', 'all', 'list', 'show', 'me', 'find', 'get']);
 

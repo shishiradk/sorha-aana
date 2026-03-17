@@ -1,5 +1,5 @@
 import { RealEstateRAG } from './rag-engine';
-import { vectorizeProperties, getVectorizationStatus } from './vectorize';
+import { vectorizeProperties, getVectorizationStatus, cleanupStaleVectors } from './vectorize';
 import { html } from './ui';
 import { RealEstateAPI } from './api';
 import { openApiSpec, swaggerHtml } from './swagger';
@@ -16,6 +16,34 @@ export interface Env {
   ENVIRONMENT: string;
   MAX_RESULTS: string;
   PRICE_TOLERANCE: string;
+  ADMIN_API_KEY?: string; // Optional API key for admin endpoints
+  ALLOWED_ORIGINS?: string; // Comma-separated allowed origins (default: *)
+}
+
+/** Check if request has valid admin API key (header only) */
+function isAdminAuthorized(request: Request, env: Env): boolean {
+  if (!env.ADMIN_API_KEY) return true; // No key configured = open access (backward compatible)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7) === env.ADMIN_API_KEY;
+  }
+  return false;
+}
+
+/** Build CORS headers based on env config */
+function getCorsHeaders(request: Request, env: Env): Record<string, string> {
+  const allowedOrigins = env.ALLOWED_ORIGINS
+    ? env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : ['*'];
+  const origin = request.headers.get('Origin') || '';
+  const allowOrigin = allowedOrigins.includes('*') ? '*'
+    : (origin && allowedOrigins.includes(origin)) ? origin : '*';
+
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  };
 }
 
 /** Geocode new properties that have latitude IS NULL — called by cron */
@@ -78,13 +106,19 @@ async function geocodeNewProperties(env: Env, batchSize: number) {
 export default {
   // Runs every 5 minutes via Cloudflare Cron Trigger
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log('Cron: running incremental vectorization + geocoding...');
+    console.log('Cron: running incremental vectorization + geocoding + cleanup...');
     ctx.waitUntil((async () => {
+      const start = Date.now();
+      const timeLeft = () => 25000 - (Date.now() - start); // 25s budget (5s safety margin)
+
       // Step 1: Vectorize new/updated properties
-      await vectorizeProperties(env, true);
+      if (timeLeft() > 5000) await vectorizeProperties(env, true);
 
       // Step 2: Geocode new properties that have no coordinates (5 per run to stay within 30s + rate limits)
-      await geocodeNewProperties(env, 5);
+      if (timeLeft() > 5000) await geocodeNewProperties(env, 5);
+
+      // Step 3: Cleanup vectors for deleted/inactive properties (once per run)
+      if (timeLeft() > 3000) await cleanupStaleVectors(env);
     })());
   },
 
@@ -99,11 +133,18 @@ export default {
       });
     }
 
-    // CORS
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+    // CORS — respects ALLOWED_ORIGINS env var
+    const corsHeaders = getCorsHeaders(request, env);
+
+    // Admin auth helper — returns 401 Response or null if authorized
+    const requireAdmin = (): Response | null => {
+      if (!isAdminAuthorized(request, env)) {
+        return Response.json(
+          { error: 'Unauthorized. Provide admin API key via Authorization: Bearer <key> header.' },
+          { status: 401, headers: corsHeaders }
+        );
+      }
+      return null;
     };
 
     // Serve Swagger UI
@@ -133,11 +174,22 @@ export default {
 
       // Search endpoint
       if (path === '/search' && request.method === 'POST') {
-        const body = await request.json() as any;
-        const { query } = body;
+        let body: any;
+        try { body = await request.json(); } catch {
+          return Response.json({ error: 'Invalid JSON body' }, { status: 400, headers: corsHeaders });
+        }
+        const query = body?.query;
+        if (!query || typeof query !== 'string' || query.trim().length === 0) {
+          return Response.json({ error: 'Missing or empty "query" parameter.' }, { status: 400, headers: corsHeaders });
+        }
+        if (query.length > 500) {
+          return Response.json({ error: 'Query too long. Maximum 500 characters.' }, { status: 400, headers: corsHeaders });
+        }
 
         const rag = new RealEstateRAG(env);
-        const result = await rag.query(query);
+        const limit = Math.min(Math.max(parseInt(body.limit, 10) || 20, 1), 100);
+        const offset = Math.max(parseInt(body.offset, 10) || 0, 0);
+        const result = await rag.query(query.trim(), { limit, offset });
 
         return Response.json(result, { headers: corsHeaders });
       }
@@ -160,6 +212,8 @@ export default {
 
       // Vectorize admin endpoints
       if (path === '/api/vectorize' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
         // Run in background to avoid timeout
         ctx.waitUntil(vectorizeProperties(env));
         return Response.json({
@@ -221,8 +275,11 @@ export default {
 
       // Process vectorization queue (manual trigger)
       if (path === '/api/vectorize/queue/process' && request.method === 'POST') {
-        const body = await request.json() as any;
-        const maxJobs = body.max_jobs || 50;
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+        let body: any = {};
+        try { body = await request.json(); } catch { /* empty body is ok */ }
+        const maxJobs = Math.min(Math.max(1, parseInt(body?.max_jobs, 10) || 50), 200);
 
         ctx.waitUntil(processVectorizationQueue(env, maxJobs));
         return Response.json({
@@ -250,8 +307,11 @@ export default {
 
       // Full vectorization with optional mode selection
       if (path === '/api/vectorize/full' && request.method === 'POST') {
-        const body = await request.json() as any;
-        const mode = body.mode || 'incremental'; // 'incremental' or 'full'
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+        let body: any = {};
+        try { body = await request.json(); } catch { /* empty body is ok */ }
+        const mode = ['incremental', 'full'].includes(body?.mode) ? body.mode : 'incremental';
 
         ctx.waitUntil(vectorizeProperties(env, mode === 'incremental'));
         return Response.json({
@@ -266,6 +326,8 @@ export default {
 
       // Update coordinates for specific properties (fixes lat=0 failures)
       if (path === '/api/geocode/update' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
         try {
           const body = await request.json() as any;
           const updates = body.updates as Array<{ table: string; id: number; lat: number; lng: number }>;
@@ -300,9 +362,11 @@ export default {
 
       // Batch geocoding endpoints
       if (path === '/api/geocode/batch' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
         try {
           const body = await request.json() as any;
-          const batchSize = Math.min(body.batch_size || 20, 25); // Max 25 per call (Nominatim rate limit)
+          const batchSize = Math.min(Math.max(parseInt(body.batch_size, 10) || 20, 1), 25); // Max 25 per call (Nominatim rate limit)
 
           const result = await batchGeocode(env, batchSize);
           return Response.json(result, { headers: corsHeaders });
@@ -355,6 +419,8 @@ export default {
 
       // Database query endpoint - read-only SQL queries
       if (path === '/api/query' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
         try {
           const body = await request.json() as any;
           const { sql } = body;
@@ -366,12 +432,19 @@ export default {
             );
           }
 
-          // Only allow read-only statements
-          const trimmed = sql.trim().toUpperCase();
+          // Only allow read-only statements — strip comments, semicolons, and whitespace first
+          const sanitized = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*$/gm, '').trim().toUpperCase();
           const allowed = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'];
-          if (!allowed.some(kw => trimmed.startsWith(kw))) {
+          if (!allowed.some(kw => sanitized.startsWith(kw))) {
             return Response.json(
               { error: 'Only SELECT, SHOW, DESCRIBE, and EXPLAIN queries are permitted.' },
+              { status: 403, headers: corsHeaders }
+            );
+          }
+          // Block multiple statements (semicolons)
+          if (sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--.*$/gm, '').replace(/;[\s]*$/, '').includes(';')) {
+            return Response.json(
+              { error: 'Multiple statements are not allowed.' },
               { status: 403, headers: corsHeaders }
             );
           }
@@ -418,9 +491,10 @@ export default {
       return new Response('Available endpoints:\n' + endpoints.map(e => '  ' + e).join('\n'), { status: 404 });
 
     } catch (error: any) {
+      console.error('Unhandled error:', error);
       return Response.json({
-        error: error.message
-      }, { status: 500, headers: corsHeaders });
+        error: 'Internal server error. Please try again later.'
+      }, { status: 500, headers: getCorsHeaders(request, env) });
     }
   }
 };

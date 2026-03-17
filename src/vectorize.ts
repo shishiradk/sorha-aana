@@ -733,8 +733,10 @@ async function processBatch(
                  WHERE id = ?`,
                 [rowId]
               );
-            } catch {
-              // Tracking columns may not exist yet — that's OK
+            } catch (trackErr: any) {
+              if (!trackErr?.message?.includes('Unknown column')) {
+                console.warn(`Tracking update failed for ${tableName}#${rowId}: ${trackErr.message}`);
+              }
             }
           }
 
@@ -815,6 +817,60 @@ export async function vectorizeSingleProperty(
 }
 
 // -- Status --
+
+/** Remove vectors for properties that are deleted or no longer ACTIVE */
+export async function cleanupStaleVectors(env: Env): Promise<{ deleted: number }> {
+  const tables = [
+    { name: 'sellers', prefix: 'seller' },
+    { name: 'rental_owners', prefix: 'rental' },
+    { name: 'buyers', prefix: 'buyer' },
+    { name: 'tenants', prefix: 'tenant' },
+    { name: 'agents', prefix: 'agent' },
+  ];
+
+  let deleted = 0;
+  for (const { name, prefix } of tables) {
+    try {
+      // Find IDs that are vectorized but no longer active
+      // Only sellers and rental_owners have a status column for staleness detection
+      if (!['sellers', 'rental_owners'].includes(name)) continue;
+      const { results: staleRows } = await queryAll<any>(env,
+        `SELECT id FROM ${name} WHERE is_vectorized_complete = TRUE AND status != 'ACTIVE'`
+      );
+
+      if (!staleRows || staleRows.length === 0) continue;
+
+      // Build vector IDs to delete (each property has _main and _keywords chunks)
+      const vectorIds: string[] = [];
+      for (const row of staleRows) {
+        vectorIds.push(`${prefix}_${row.id}_main`, `${prefix}_${row.id}_keywords`);
+      }
+
+      // Delete from Vectorize in batches of 100
+      for (let i = 0; i < vectorIds.length; i += 100) {
+        const batch = vectorIds.slice(i, i + 100);
+        await env.VECTORIZE.deleteByIds(batch);
+      }
+
+      // Reset vectorization tracking so they don't get picked up again
+      const ids = staleRows.map((r: any) => r.id);
+      if (ids.length > 0) {
+        const placeholders = ids.map(() => '?').join(',');
+        await queryExecute(env,
+          `UPDATE ${name} SET is_vectorized_complete = FALSE WHERE id IN (${placeholders})`,
+          ids
+        );
+      }
+
+      deleted += vectorIds.length;
+      if (vectorIds.length > 0) console.log(`Cleaned ${vectorIds.length} stale vectors from ${name}`);
+    } catch (err: any) {
+      console.warn(`Vector cleanup for ${name}: ${err.message}`);
+    }
+  }
+
+  return { deleted };
+}
 
 export async function getVectorizationStatus(env: Env): Promise<{
   total_properties: number;
