@@ -10,6 +10,16 @@ export const openApiSpec = {
             "url": "/"
         }
     ],
+    "components": {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Admin API key. Pass as: Authorization: Bearer <your-key>"
+            }
+        }
+    },
+    "security": [{ "BearerAuth": [] }],
     "paths": {
         "/status": {
             "get": {
