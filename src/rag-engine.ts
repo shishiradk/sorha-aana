@@ -676,6 +676,21 @@ export class RealEstateRAG {
       }
     }
 
+    // Hard-filter by price when explicitly specified (with 10% tolerance)
+    if (parsed?.minNPR) {
+      const threshold = parsed.minNPR * 0.9;
+      results = results.filter(p => !p.price_npr || p.price_npr >= threshold);
+    }
+    if (parsed?.maxNPR) {
+      const threshold = parsed.maxNPR * 1.1;
+      results = results.filter(p => !p.price_npr || p.price_npr <= threshold);
+    }
+
+    // Hard-filter by bedrooms when explicitly specified
+    if (parsed?.bedrooms) {
+      results = results.filter(p => !p.bedrooms || Math.abs(p.bedrooms - parsed.bedrooms!) <= 1);
+    }
+
     // Sort results based on what filters are active
     const hasPrice = !!(parsed?.minNPR || parsed?.maxNPR);
     const hasFeatureFilters = !!(parsed?.minArea || parsed?.maxArea || parsed?.storeys || parsed?.facing || parsed?.furnished !== null && parsed?.furnished !== undefined || parsed?.roadAccess || parsed?.category);
