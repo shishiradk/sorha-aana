@@ -11,6 +11,29 @@ export const openApiSpec = {
         }
     ],
     "paths": {
+        "/status": {
+            "get": {
+                "summary": "Health Check",
+                "description": "Check system health and Vectorize index status.",
+                "responses": {
+                    "200": {
+                        "description": "System is healthy",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "status": { "type": "string", "example": "ok" },
+                                        "vectors": { "type": "integer" },
+                                        "dimensions": { "type": "integer" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/search": {
             "post": {
                 "summary": "AI Semantic Search",
