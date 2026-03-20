@@ -82,7 +82,7 @@ export class RealEstateRAG {
     }
   }
 
-  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }> {
+  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }> {
     console.log(`Searching: "${query}" [intent: ${intent || 'any'}] [owner: ${ownerId || 'all'}]`);
 
     // Owner filter helper — appends AND owner_id = N when scoped
@@ -130,7 +130,7 @@ export class RealEstateRAG {
 
     // If location is outside our coverage area, short-circuit
     if (outsideCoverage) {
-      return { results: [], locationPhrase, geocodeFailed, outsideCoverage: outsideCoverage };
+      return { results: [], locationPhrase, geocodeFailed, outsideCoverage, filteredOut: false };
     }
 
     // If we have coordinates, also get nearby property IDs from DB
@@ -690,21 +690,6 @@ export class RealEstateRAG {
       }
     }
 
-    // Hard-filter by price when explicitly specified (with 10% tolerance)
-    if (parsed?.minNPR) {
-      const threshold = parsed.minNPR * 0.9;
-      results = results.filter(p => !p.price_npr || p.price_npr >= threshold);
-    }
-    if (parsed?.maxNPR) {
-      const threshold = parsed.maxNPR * 1.1;
-      results = results.filter(p => !p.price_npr || p.price_npr <= threshold);
-    }
-
-    // Hard-filter by bedrooms when explicitly specified
-    if (parsed?.bedrooms) {
-      results = results.filter(p => !p.bedrooms || Math.abs(p.bedrooms - parsed.bedrooms!) <= 1);
-    }
-
     // Sort results based on what filters are active
     const hasPrice = !!(parsed?.minNPR || parsed?.maxNPR);
     const hasFeatureFilters = !!(parsed?.minArea || parsed?.maxArea || parsed?.storeys || parsed?.facing || parsed?.furnished !== null && parsed?.furnished !== undefined || parsed?.roadAccess || parsed?.category);
@@ -739,12 +724,41 @@ export class RealEstateRAG {
       });
     }
 
-    return { results, locationPhrase, geocodeFailed, outsideCoverage };
+    const resultsBeforeFilter = results.length;
+
+    // Hard-filter by price when explicitly specified
+    if (parsed?.minNPR) {
+      const threshold = parsed.minNPR * 0.9;
+      results = results.filter(p => p.price_npr && p.price_npr >= threshold);
+    }
+    if (parsed?.maxNPR) {
+      const threshold = parsed.maxNPR * 1.1;
+      results = results.filter(p => p.price_npr && p.price_npr <= threshold);
+    }
+
+    // Hard-filter by bedrooms when explicitly specified (±1)
+    if (parsed?.bedrooms) {
+      results = results.filter(p => p.bedrooms && Math.abs(p.bedrooms - parsed.bedrooms!) <= 1);
+    }
+
+    const filteredOut = resultsBeforeFilter > 0 && results.length === 0;
+
+    return { results, locationPhrase, geocodeFailed, outsideCoverage, filteredOut };
   }
 
-  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }): Promise<string> {
+  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }): Promise<string> {
     if (properties.length === 0) {
-      // Location is outside Kaski district — we only cover Kaski
+      // Had results but filters (price/bedrooms) eliminated all
+      if (locationCtx?.filteredOut) {
+        const filterParts: string[] = [];
+        if (parsed?.maxNPR) filterParts.push(`under NPR ${parsed.maxNPR.toLocaleString()}`);
+        if (parsed?.minNPR) filterParts.push(`above NPR ${parsed.minNPR.toLocaleString()}`);
+        if (parsed?.bedrooms) filterParts.push(`${parsed.bedrooms} bedroom`);
+        const filterDesc = filterParts.length > 0 ? ` matching ${filterParts.join(', ')}` : '';
+        const locDesc = locationCtx?.locationPhrase ? ` in ${locationCtx.locationPhrase}` : '';
+        return `We have properties${locDesc}, but none${filterDesc}. Try adjusting your budget or bedroom requirements.`;
+      }
+      // Location is outside our coverage area
       if (locationCtx?.locationPhrase && locationCtx.outsideCoverage) {
         return `Sorry, "${locationCtx.locationPhrase}" is outside our current coverage area. We don't have property listings for that location. Try searching in areas where we have data, like Pokhara and nearby districts.`;
       }
@@ -838,26 +852,54 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
 - End with a short list: source table and ID for each property mentioned.`;
 
     try {
+      console.log(`AI prompt length: ${prompt.length} chars`);
+
+      // Cache AI responses to save neurons — keyed by prompt hash, TTL 1 hour
+      const cache = (caches as any).default;
+      const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt));
+      const hashHex = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+      const cacheKey = new Request(`https://ai-cache.internal/${hashHex}`);
+
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        console.log('AI cache HIT — saving neurons');
+        return await cached.text();
+      }
+
       const response = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1024
       });
+      if (!response?.response) {
+        console.error('AI returned empty response:', JSON.stringify(response));
+        return 'I found matching properties shown below, but the AI analysis is temporarily unavailable.';
+      }
+
+      // Store in cache for 1 hour
+      const cacheResp = new Response(response.response, {
+        headers: { 'Cache-Control': 'max-age=3600' }
+      });
+      await cache.put(cacheKey, cacheResp);
+      console.log('AI cache MISS — stored for 1h');
+
       return response.response;
-    } catch (e) {
-      console.error('AI generation failed:', e);
-      return 'I found matching properties shown below, but I am having trouble generating a detailed analysis right now.';
+    } catch (e: any) {
+      const errMsg = e?.message || String(e);
+      console.error('AI generation failed:', errMsg, 'Prompt length:', prompt.length);
+      return `I found matching properties shown below. (AI error: ${errMsg})`;
     }
   }
 
   async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null }): Promise<any> {
     const intent = detectListingIntent(question);
     const parsed = extractParsedIntent(question);
-    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed, options?.ownerId);
+    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId);
 
     const limit = Math.min(options?.limit || 20, 50);
     const offset = options?.offset || 0;
     const properties = allProperties.slice(offset, offset + limit);
 
-    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage });
+    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut });
 
     return {
       query: question,
@@ -992,12 +1034,12 @@ export function extractParsedIntent(query: string): ParsedIntent {
   const lower = query.toLowerCase();
 
   // Price range extraction — supports: lakh/lakhs/lac/l, crore/crores/cr, thousand/k
+  // Uses literal RegExp to avoid template-literal escaping bugs
   const unitMult: Record<string, number> = {
     lakh: 100000, lakhs: 100000, lac: 100000, lacs: 100000, l: 100000,
     crore: 10000000, crores: 10000000, cr: 10000000, crs: 10000000,
     thousand: 1000, k: 1000,
   };
-  const priceUnitPattern = 'lakhs?|lacs?|crores?|crs?|thousand|[klL]\\b';
   const toNPR = (num: string, unit: string): number | null => {
     const val = parseFloat(num) * (unitMult[unit.toLowerCase()] ?? 1);
     return isNaN(val) ? null : val;
@@ -1006,15 +1048,18 @@ export function extractParsedIntent(query: string): ParsedIntent {
   let minNPR: number | null = null;
   let maxNPR: number | null = null;
 
-  const rangeMatch = lower.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})\\s*(?:to|and|-)\\s*(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
+  // Range: "50 lakh to 1 crore", "10l-20l"
+  const rangeMatch = lower.match(/(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\s*(?:to|and|-)\s*(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
   if (rangeMatch) {
     minNPR = toNPR(rangeMatch[1], rangeMatch[2]);
     maxNPR = toNPR(rangeMatch[3], rangeMatch[4]);
   } else {
-    const underMatch = lower.match(new RegExp(`(?:under|below|less than|upto|up to|max|maximum)\\s*(?:npr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
+    // Under: "under 1 crore", "below 50lakhs", "less than 1cr"
+    const underMatch = lower.match(/(?:under|below|less\s+than|upto|up\s+to|max|maximum)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
     if (underMatch) maxNPR = toNPR(underMatch[1], underMatch[2]);
 
-    const overMatch = lower.match(new RegExp(`(?:above|over|more than|minimum|min|at least)\\s*(?:npr\\s*)?(\\d+(?:\\.\\d+)?)\\s*(${priceUnitPattern})`));
+    // Over: "above 5cr", "over 1 crore", "more than 50 lakh"
+    const overMatch = lower.match(/(?:above|over|more\s+than|minimum|min|at\s+least)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
     if (overMatch) minNPR = toNPR(overMatch[1], overMatch[2]);
   }
 

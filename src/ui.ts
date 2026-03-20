@@ -193,6 +193,44 @@ export const html = `
             color: var(--muted);
             border: 2px solid var(--border);
         }
+        .auth-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 2px solid var(--border);
+            background: #fafafa;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .auth-bar label {
+            font-size: 0.85rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .auth-bar input {
+            flex: 1;
+            padding: 10px;
+            font-size: 0.95rem;
+            min-width: 120px;
+            border: 1px solid var(--border);
+        }
+        .auth-bar .auth-field {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex: 1;
+            min-width: 180px;
+        }
+        .auth-status {
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+        .auth-ok { color: var(--accent); }
+        .auth-no { color: #c00; }
     </style>
 </head>
 <body>
@@ -201,6 +239,18 @@ export const html = `
             <h1>Sorha Aana</h1>
             <p>REAL ESTATE AI &mdash; KASKI, NEPAL</p>
         </header>
+
+        <div class="auth-bar">
+            <div class="auth-field">
+                <label for="apiKey">API Key:</label>
+                <input type="password" id="apiKey" placeholder="Enter API key" autocomplete="off">
+            </div>
+            <div class="auth-field">
+                <label for="ownerId">Owner ID:</label>
+                <input type="number" id="ownerId" placeholder="e.g. 3" min="1" autocomplete="off">
+            </div>
+            <span id="authStatus" class="auth-status auth-no">NOT AUTHORIZED</span>
+        </div>
 
         <form id="searchForm" class="search-box">
             <input type="text" id="query" placeholder="Search properties..." required autocomplete="off">
@@ -332,18 +382,51 @@ export const html = `
             return html;
         }
 
+        // Auth status indicator
+        var apiKeyInput = document.getElementById('apiKey');
+        var ownerIdInput = document.getElementById('ownerId');
+        var authStatus = document.getElementById('authStatus');
+
+        function updateAuthStatus() {
+            var hasKey = apiKeyInput.value.trim().length > 0;
+            var hasOwner = ownerIdInput.value.trim().length > 0 && parseInt(ownerIdInput.value) > 0;
+            if (hasKey && hasOwner) {
+                authStatus.textContent = 'AUTHORIZED (Owner ' + ownerIdInput.value + ')';
+                authStatus.className = 'auth-status auth-ok';
+            } else if (!hasKey && !hasOwner) {
+                authStatus.textContent = 'NOT AUTHORIZED';
+                authStatus.className = 'auth-status auth-no';
+            } else if (!hasKey) {
+                authStatus.textContent = 'MISSING API KEY';
+                authStatus.className = 'auth-status auth-no';
+            } else {
+                authStatus.textContent = 'MISSING OWNER ID';
+                authStatus.className = 'auth-status auth-no';
+            }
+        }
+        apiKeyInput.addEventListener('input', updateAuthStatus);
+        ownerIdInput.addEventListener('input', updateAuthStatus);
+
         form.addEventListener('submit', async function(e) {
             e.preventDefault();
             var query = document.getElementById('query').value;
+            var apiKey = apiKeyInput.value.trim();
+            var ownerId = parseInt(ownerIdInput.value) || null;
+
+            if (!ownerId || !apiKey) {
+                alert('Please enter both API Key and Owner ID before searching.');
+                return;
+            }
 
             loading.style.display = 'block';
             resultArea.style.display = 'none';
 
             try {
+                var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey };
                 var res = await fetch('/search', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query })
+                    headers: headers,
+                    body: JSON.stringify({ query: query, owner_id: ownerId })
                 });
 
                 var data = await res.json();
