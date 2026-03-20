@@ -2,7 +2,7 @@ import { Env } from './index';
 import { queryAll, queryOne } from './db-utils';
 
 export class RealEstateAPI {
-    constructor(private env: Env, private corsHeaders: Record<string, string>) {}
+    constructor(private env: Env, private corsHeaders: Record<string, string>, private isAuthorized: boolean = false) {}
 
     async handleRequest(request: Request): Promise<Response> {
         const url = new URL(request.url);
@@ -10,6 +10,20 @@ export class RealEstateAPI {
         const method = request.method;
 
         const corsHeaders = this.corsHeaders;
+
+        // Owner filter: if owner_id param is provided and request is authorized, scope to that owner
+        const ownerParam = url.searchParams.get('owner_id');
+        let ownerId: number | null = null;
+        if (ownerParam) {
+            ownerId = parseInt(ownerParam, 10);
+            if (isNaN(ownerId) || ownerId <= 0) {
+                return Response.json({ error: 'Invalid owner_id' }, { status: 400, headers: corsHeaders });
+            }
+            if (!this.isAuthorized) {
+                return Response.json({ error: 'Unauthorized. Provide API key to filter by owner.' }, { status: 401, headers: corsHeaders });
+            }
+        }
+        const ownerFilter = (alias: string) => ownerId ? ` AND ${alias}.owner_id = ${ownerId}` : '';
 
         // GET /api/properties — list sellers + rental_owners
         if (path === '/api/properties' && method === 'GET') {
@@ -27,7 +41,7 @@ export class RealEstateAPI {
                          FROM sellers s
                          LEFT JOIN districts d ON s.district_id = d.id
                          LEFT JOIN municipalities m ON s.municipal_id = m.id
-                         WHERE s.status = 'ACTIVE'
+                         WHERE s.status = 'ACTIVE'${ownerFilter('s')}
                          ORDER BY s.id DESC LIMIT 50`
                     );
                     results.push(...sellers);
@@ -43,7 +57,7 @@ export class RealEstateAPI {
                          FROM rental_owners ro
                          LEFT JOIN districts d ON ro.district_id = d.id
                          LEFT JOIN municipalities m ON ro.municipal_id = m.id
-                         WHERE ro.status = 'ACTIVE'
+                         WHERE ro.status = 'ACTIVE'${ownerFilter('ro')}
                          ORDER BY ro.id DESC LIMIT 50`
                     );
                     results.push(...rentals);

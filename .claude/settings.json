@@ -15,7 +15,10 @@
       "Bash(for q:*)",
       "Bash(do echo:*)",
       "Bash(python3 -c \":*)",
-      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT COUNT\\(DISTINCT LOWER\\(property_address\\)\\) as unique_areas FROM sellers WHERE latitude IS NOT NULL AND latitude > 0\"\"}')"
+      "Bash(curl -s -X POST https://sorha-aana-worker.neptechpal355.workers.dev/api/query -H \"Content-Type: application/json\" -H \"User-Agent: curl/7.68.0\" -d '{\"\"sql\"\": \"\"SELECT COUNT\\(DISTINCT LOWER\\(property_address\\)\\) as unique_areas FROM sellers WHERE latitude IS NOT NULL AND latitude > 0\"\"}')",
+      "Bash(find c:/sorha-aana/exports -type f -name *.csv)",
+      "Bash(grep -r 'CREATE TABLE' c:/sorha-aana --include=*.sql)",
+      "Bash(grep -r \"customers\\\\|owners\" c:/sorha-aana --include=*.json --include=*.md)"
     ]
   }
 }

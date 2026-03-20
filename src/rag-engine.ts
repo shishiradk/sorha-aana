@@ -82,8 +82,11 @@ export class RealEstateRAG {
     }
   }
 
-  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }> {
-    console.log(`Searching: "${query}" [intent: ${intent || 'any'}]`);
+  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean }> {
+    console.log(`Searching: "${query}" [intent: ${intent || 'any'}] [owner: ${ownerId || 'all'}]`);
+
+    // Owner filter helper — appends AND owner_id = N when scoped
+    const ownerFilter = (alias: string) => ownerId ? ` AND ${alias}.owner_id = ${ownerId}` : '';
 
     // Detect location intent and geocode
     const locationPhrase = extractLocationFromQuery(query);
@@ -105,7 +108,7 @@ export class RealEstateRAG {
           const distExpr = haversineSQL('latitude', 'longitude');
           try {
             const { results: nearest } = await queryAll(this.env,
-              `SELECT MIN(${distExpr}) as min_dist FROM sellers WHERE latitude IS NOT NULL AND latitude != 0`,
+              `SELECT MIN(${distExpr}) as min_dist FROM sellers s WHERE s.latitude IS NOT NULL AND s.latitude != 0${ownerFilter('s')}`,
               [searchCoords.lat, searchCoords.lng, searchCoords.lat]);
             const minDist = nearest?.[0]?.min_dist;
             if (minDist != null && minDist > 50) {
@@ -144,10 +147,10 @@ export class RealEstateRAG {
       if (intent !== 'rent') {
         try {
           const { results: nearby } = await queryAll(this.env,
-            `SELECT id, ${distExpr} as distance_km
-             FROM sellers
-             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-             AND ${distExpr} < ?
+            `SELECT s.id, ${distExpr} as distance_km
+             FROM sellers s
+             WHERE s.latitude IS NOT NULL AND s.longitude IS NOT NULL
+             AND ${distExpr} < ?${ownerFilter('s')}
              ORDER BY distance_km ASC
              LIMIT 20`,
             [lat, lng, lat, lat, lng, lat, radiusKm]
@@ -164,10 +167,10 @@ export class RealEstateRAG {
       if (intent !== 'sale') {
         try {
           const { results: nearby } = await queryAll(this.env,
-            `SELECT id, ${distExpr} as distance_km
-             FROM rental_owners
-             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-             AND ${distExpr} < ?
+            `SELECT ro.id, ${distExpr} as distance_km
+             FROM rental_owners ro
+             WHERE ro.latitude IS NOT NULL AND ro.longitude IS NOT NULL
+             AND ${distExpr} < ?${ownerFilter('ro')}
              ORDER BY distance_km ASC
              LIMIT 20`,
             [lat, lng, lat, lat, lng, lat, radiusKm]
@@ -272,7 +275,7 @@ export class RealEstateRAG {
         try {
           const fuzzy = buildFuzzySQL('property_address');
           const { results: textRows } = await queryAll(this.env,
-            `SELECT id FROM sellers ${fuzzy.sql} LIMIT 20`,
+            `SELECT s.id FROM sellers s ${fuzzy.sql}${ownerFilter('s')} LIMIT 20`,
             fuzzy.params
           );
           for (const r of textRows as any[]) {
@@ -291,7 +294,7 @@ export class RealEstateRAG {
         try {
           const fuzzy = buildFuzzySQL('address');
           const { results: textRows } = await queryAll(this.env,
-            `SELECT id FROM rental_owners ${fuzzy.sql} LIMIT 20`,
+            `SELECT ro.id FROM rental_owners ro ${fuzzy.sql}${ownerFilter('ro')} LIMIT 20`,
             fuzzy.params
           );
           for (const r of textRows as any[]) {
@@ -351,7 +354,7 @@ export class RealEstateRAG {
          LEFT JOIN municipalities m ON s.municipal_id = m.id
          LEFT JOIN provinces p ON s.province_id = p.id
          LEFT JOIN customers c ON s.customer_id = c.id
-         WHERE s.id IN (${placeholders})`,
+         WHERE s.id IN (${placeholders})${ownerFilter('s')}`,
         ids
       );
 
@@ -413,7 +416,7 @@ export class RealEstateRAG {
          LEFT JOIN municipalities m ON ro.municipal_id = m.id
          LEFT JOIN provinces p ON ro.province_id = p.id
          LEFT JOIN customers c ON ro.customer_id = c.id
-         WHERE ro.id IN (${placeholders})`,
+         WHERE ro.id IN (${placeholders})${ownerFilter('ro')}`,
         ids
       );
 
@@ -472,7 +475,7 @@ export class RealEstateRAG {
            LEFT JOIN districts d ON b.district_id = d.id
            LEFT JOIN municipalities m ON b.municipal_id = m.id
            LEFT JOIN customers c ON b.customer_id = c.id
-           WHERE b.id IN (${placeholders})`, ids);
+           WHERE b.id IN (${placeholders})${ownerFilter('b')}`, ids);
         for (const row of rows) {
           const budgetMax = row.maximum_budget ? formatPrice(row.maximum_budget, row.maximum_budget_unit) : null;
           const budgetMin = row.minimum_budget ? formatPrice(row.minimum_budget, row.minimum_budget_unit) : null;
@@ -506,7 +509,7 @@ export class RealEstateRAG {
            LEFT JOIN districts d ON t.district_id = d.id
            LEFT JOIN municipalities m ON t.municipal_id = m.id
            LEFT JOIN customers c ON t.customer_id = c.id
-           WHERE t.id IN (${placeholders})`, ids);
+           WHERE t.id IN (${placeholders})${ownerFilter('t')}`, ids);
         for (const row of rows) {
           const rentMax = row.maximum_rent || row.max_rent;
           results.push({
@@ -534,7 +537,7 @@ export class RealEstateRAG {
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
-          `SELECT * FROM agents WHERE id IN (${placeholders})`, ids);
+          `SELECT a.* FROM agents a WHERE a.id IN (${placeholders})${ownerFilter('a')}`, ids);
         for (const row of rows) {
           results.push({
             id: row.id, source_table: 'agents', listing_type: 'Agent',
@@ -845,10 +848,10 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
     }
   }
 
-  async query(question: string, options?: { limit?: number; offset?: number }): Promise<any> {
+  async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null }): Promise<any> {
     const intent = detectListingIntent(question);
     const parsed = extractParsedIntent(question);
-    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed);
+    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage } = await this.searchProperties(question, intent, parsed, options?.ownerId);
 
     const limit = Math.min(options?.limit || 20, 50);
     const offset = options?.offset || 0;

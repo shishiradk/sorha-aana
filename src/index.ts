@@ -186,10 +186,19 @@ export default {
           return Response.json({ error: 'Query too long. Maximum 500 characters.' }, { status: 400, headers: corsHeaders });
         }
 
+        // Owner-scoped search: owner_id is required
+        const ownerId = body?.owner_id ? parseInt(body.owner_id, 10) : null;
+        if (!ownerId || isNaN(ownerId) || ownerId <= 0) {
+          return Response.json({ error: 'Missing or invalid "owner_id". Provide a valid owner_id to search.' }, { status: 400, headers: corsHeaders });
+        }
+        if (!isAdminAuthorized(request, env)) {
+          return Response.json({ error: 'Unauthorized. Provide API key via Authorization: Bearer <key> header.' }, { status: 401, headers: corsHeaders });
+        }
+
         const rag = new RealEstateRAG(env);
         const limit = Math.min(Math.max(parseInt(body.limit, 10) || 20, 1), 100);
         const offset = Math.max(parseInt(body.offset, 10) || 0, 0);
-        const result = await rag.query(query.trim(), { limit, offset });
+        const result = await rag.query(query.trim(), { limit, offset, ownerId });
 
         return Response.json(result, { headers: corsHeaders });
       }
@@ -465,9 +474,9 @@ export default {
         }
       }
 
-      // REST API Delegate (read-only, no auth needed)
+      // REST API Delegate (read-only, auth needed only for owner_id filtering)
       if (path.startsWith('/api/properties')) {
-        const api = new RealEstateAPI(env, corsHeaders);
+        const api = new RealEstateAPI(env, corsHeaders, isAdminAuthorized(request, env));
         return api.handleRequest(request);
       }
 
