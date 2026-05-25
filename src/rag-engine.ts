@@ -726,6 +726,22 @@ export class RealEstateRAG {
 
     const resultsBeforeFilter = results.length;
 
+    // Hard-filter by property type when user is specific (e.g., "house", "land", "flat")
+    // Generic terms like "properties", "listings" return all types
+    if (queryPropType) {
+      results = results.filter(p => {
+        const pType = (p.property_type || '').toLowerCase();
+        return pType === queryPropType;
+      });
+    }
+
+    // Hard-filter by listing intent (sale vs rent)
+    if (intent === 'sale') {
+      results = results.filter(p => p.listing_type === 'Sale');
+    } else if (intent === 'rent') {
+      results = results.filter(p => p.listing_type === 'Rent');
+    }
+
     // Hard-filter by price when explicitly specified
     if (parsed?.minNPR) {
       const threshold = parsed.minNPR * 0.9;
@@ -736,9 +752,10 @@ export class RealEstateRAG {
       results = results.filter(p => p.price_npr && p.price_npr <= threshold);
     }
 
-    // Hard-filter by bedrooms when explicitly specified (±1)
+    // Hard-filter by bedrooms: exclude only if bedroom count is known AND too far off (±2)
+    // Properties with null/unknown bedrooms are kept (ranked lower by bedroomScore)
     if (parsed?.bedrooms) {
-      results = results.filter(p => p.bedrooms && Math.abs(p.bedrooms - parsed.bedrooms!) <= 1);
+      results = results.filter(p => !p.bedrooms || Math.abs(p.bedrooms - parsed.bedrooms!) <= 2);
     }
 
     const filteredOut = resultsBeforeFilter > 0 && results.length === 0;
@@ -751,12 +768,16 @@ export class RealEstateRAG {
       // Had results but filters (price/bedrooms) eliminated all
       if (locationCtx?.filteredOut) {
         const filterParts: string[] = [];
+        const propType = extractPropertyType(question);
+        if (propType) filterParts.push(propType);
         if (parsed?.maxNPR) filterParts.push(`under NPR ${parsed.maxNPR.toLocaleString()}`);
         if (parsed?.minNPR) filterParts.push(`above NPR ${parsed.minNPR.toLocaleString()}`);
         if (parsed?.bedrooms) filterParts.push(`${parsed.bedrooms} bedroom`);
+        if (intent === 'sale') filterParts.push('for sale');
+        if (intent === 'rent') filterParts.push('for rent');
         const filterDesc = filterParts.length > 0 ? ` matching ${filterParts.join(', ')}` : '';
         const locDesc = locationCtx?.locationPhrase ? ` in ${locationCtx.locationPhrase}` : '';
-        return `We have properties${locDesc}, but none${filterDesc}. Try adjusting your budget or bedroom requirements.`;
+        return `We have properties${locDesc}, but none${filterDesc}. Try adjusting your filters.`;
       }
       // Location is outside our coverage area
       if (locationCtx?.locationPhrase && locationCtx.outsideCoverage) {
@@ -891,17 +912,33 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
   }
 
   async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null }): Promise<any> {
+    const limit = Math.min(options?.limit || 20, 50);
+    const offset = options?.offset || 0;
+
+    // Query-level cache — wraps the entire pipeline (vector search + DB + geocoding + AI)
+    // Key: normalized query text + owner scope + pagination. TTL: 20min.
+    // Normalization maximises hit rate: "Houses in Pokhara?" == "houses in pokhara"
+    const normalizedQ = question.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[?!.,]+$/, '');
+    const cacheInput = `rag-v1:${normalizedQ}|${options?.ownerId ?? 'all'}|${limit}|${offset}`;
+    const cache = (caches as any).default;
+    const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cacheInput));
+    const hashHex = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+    const queryCacheKey = new Request(`https://rag-query-cache.internal/${hashHex}`);
+
+    const queryCached = await cache.match(queryCacheKey);
+    if (queryCached) {
+      console.log(`RAG query cache HIT: "${normalizedQ}"`);
+      return await queryCached.json();
+    }
+
     const intent = detectListingIntent(question);
     const parsed = extractParsedIntent(question);
     const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId);
 
-    const limit = Math.min(options?.limit || 20, 50);
-    const offset = options?.offset || 0;
     const properties = allProperties.slice(offset, offset + limit);
-
     const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut });
 
-    return {
+    const result = {
       query: question,
       answer: generatedAnswer,
       properties,
@@ -910,6 +947,14 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
       page_offset: offset,
       listing_intent: intent || 'any'
     };
+
+    // Store full result for 20 minutes
+    await cache.put(queryCacheKey, new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=1200' }
+    }));
+    console.log(`RAG query cache MISS — stored 20min: "${normalizedQ}"`);
+
+    return result;
   }
 }
 
@@ -984,7 +1029,7 @@ function parseBHK(layout: string | null): number | null {
   return null;
 }
 
-function detectListingIntent(query: string): 'sale' | 'rent' | null {
+export function detectListingIntent(query: string): 'sale' | 'rent' | null {
   const lower = query.toLowerCase();
   const rentWords = ['rent', 'rental', 'bhadama', 'bhada', 'kiraya', 'bhadai', 'lease', 'for rent', 'to rent', 'monthly'];
   const saleWords = ['sale', 'sell', 'buy', 'purchase', 'kinnu', 'bechnu', 'for sale', 'to buy'];

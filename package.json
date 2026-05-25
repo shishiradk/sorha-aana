@@ -4,7 +4,7 @@
   "description": "AI-powered real estate matching engine for Nepal",
   "main": "src/index.ts",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --remote",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply real-state",
     "db:inspect": "npx tsx inspect-database.ts",

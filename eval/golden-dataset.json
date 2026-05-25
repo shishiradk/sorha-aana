@@ -1,0 +1,217 @@
+{
+  "intent_detection": [
+    { "query": "house for rent in Pokhara",      "expected": "rent" },
+    { "query": "buy land near Lakeside",          "expected": "sale" },
+    { "query": "monthly rental flat",             "expected": "rent" },
+    { "query": "property in Bagar",               "expected": null  },
+    { "query": "sell my house",                   "expected": "sale" },
+    { "query": "3 BHK to rent",                   "expected": "rent" },
+    { "query": "purchase apartment in Pokhara",   "expected": "sale" },
+    { "query": "bhadama ghar",                    "expected": "rent" },
+    { "query": "kiraya ko flat",                  "expected": "rent" },
+    { "query": "land for sale in Chipledhunga",   "expected": "sale" }
+  ],
+
+  "filter_parsing": [
+    {
+      "query": "3 BHK house under 1 crore",
+      "expected": { "bedrooms": 3, "maxNPR": 10000000 }
+    },
+    {
+      "query": "house from 50 lakh to 80 lakh",
+      "expected": { "minNPR": 5000000, "maxNPR": 8000000 }
+    },
+    {
+      "query": "furnished flat",
+      "expected": { "furnished": true }
+    },
+    {
+      "query": "unfurnished apartment",
+      "expected": { "furnished": false }
+    },
+    {
+      "query": "north facing land",
+      "expected": { "facing": "north" }
+    },
+    {
+      "query": "east facing property",
+      "expected": { "facing": "east" }
+    },
+    {
+      "query": "2 storey house",
+      "expected": { "storeys": 2 }
+    },
+    {
+      "query": "commercial property in Pokhara",
+      "expected": { "category": "commercial" }
+    },
+    {
+      "query": "agricultural land for sale",
+      "expected": { "category": "agriculture" }
+    },
+    {
+      "query": "residential property",
+      "expected": { "category": "residential" }
+    },
+    {
+      "query": "land above 5 ropani",
+      "expected": { "minArea": 5 }
+    },
+    {
+      "query": "house under 3 aana",
+      "expected": { "maxArea": 0.1875 }
+    },
+    {
+      "query": "property above 1 crore",
+      "expected": { "minNPR": 10000000 }
+    },
+    {
+      "query": "land below 50 lakh",
+      "expected": { "maxNPR": 5000000 }
+    },
+    {
+      "query": "2 BHK apartment",
+      "expected": { "bedrooms": 2 }
+    },
+    {
+      "query": "road access required",
+      "expected": { "roadAccess": true }
+    },
+    {
+      "query": "three bedroom house for rent",
+      "expected": { "bedrooms": 3 }
+    },
+    {
+      "query": "land 10 lakh to 50 lakh",
+      "expected": { "minNPR": 1000000, "maxNPR": 5000000 }
+    },
+    {
+      "query": "house under 3 aana",
+      "expected": { "maxArea": 0.1875 }
+    }
+  ],
+
+  "e2e": [
+    {
+      "id": "E001",
+      "desc": "General Pokhara search returns results",
+      "query": "properties in Pokhara",
+      "checks": {
+        "min_results": 3,
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E002",
+      "desc": "Rent intent returns only rentals",
+      "query": "flat for rent",
+      "checks": {
+        "detected_intent": "rent",
+        "min_results": 1,
+        "all_listing_type": "Rent",
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E003",
+      "desc": "Sale intent returns only sales",
+      "query": "land for sale",
+      "checks": {
+        "detected_intent": "sale",
+        "min_results": 1,
+        "all_listing_type": "Sale",
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E004",
+      "desc": "Outside coverage (Japan) returns 0 results with coverage message",
+      "query": "property in Tokyo Japan",
+      "checks": {
+        "max_results": 0,
+        "answer_contains_any": ["outside", "coverage", "don't have", "couldn't find", "Tokyo"]
+      }
+    },
+    {
+      "id": "E005",
+      "desc": "Lakeside location search finds rentals",
+      "query": "house for rent in Lakeside",
+      "checks": {
+        "detected_intent": "rent",
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E006",
+      "desc": "Bedroom filter is respected",
+      "query": "3 BHK house for sale",
+      "checks": {
+        "detected_intent": "sale",
+        "answer_not_empty": true,
+        "answer_no_emojis": true,
+        "parsed_filters": { "bedrooms": 3 }
+      }
+    },
+    {
+      "id": "E007",
+      "desc": "Price ceiling filter is parsed and applied",
+      "query": "land under 50 lakh for sale",
+      "checks": {
+        "detected_intent": "sale",
+        "parsed_filters": { "maxNPR": 5000000 },
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E008",
+      "desc": "Agent query finds agents",
+      "query": "real estate agents in Pokhara",
+      "checks": {
+        "min_results": 1,
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E009",
+      "desc": "No emoji rule holds for general search",
+      "query": "apartment for rent near Prithvi Chowk",
+      "checks": {
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E010",
+      "desc": "Furnished filter is parsed",
+      "query": "furnished flat for rent",
+      "checks": {
+        "detected_intent": "rent",
+        "parsed_filters": { "furnished": true },
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E011",
+      "desc": "Buyers table is searched when relevant",
+      "query": "buyers looking for land in Pokhara",
+      "checks": {
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    },
+    {
+      "id": "E012",
+      "desc": "Bagar location search returns results",
+      "query": "property in Bagar Pokhara",
+      "checks": {
+        "min_results": 1,
+        "answer_not_empty": true,
+        "answer_no_emojis": true
+      }
+    }
+  ]
+}

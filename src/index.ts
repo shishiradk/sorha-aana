@@ -1,4 +1,4 @@
-import { RealEstateRAG } from './rag-engine';
+import { RealEstateRAG, extractParsedIntent, detectListingIntent } from './rag-engine';
 import { vectorizeProperties, getVectorizationStatus, cleanupStaleVectors } from './vectorize';
 import { html } from './ui';
 import { RealEstateAPI } from './api';
@@ -480,6 +480,29 @@ export default {
         return api.handleRequest(request);
       }
 
+      // Admin-only RAG query — no owner_id required, used for eval/debug
+      if (path === '/api/rag' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+        let body: any = {};
+        try { body = await request.json(); } catch {
+          return Response.json({ error: 'Invalid JSON body' }, { status: 400, headers: corsHeaders });
+        }
+        const query = body?.query;
+        if (!query || typeof query !== 'string' || query.trim().length === 0) {
+          return Response.json({ error: 'Missing "query"' }, { status: 400, headers: corsHeaders });
+        }
+        const ownerId = body?.owner_id ? parseInt(body.owner_id, 10) : null;
+        const limit = Math.min(Math.max(parseInt(body?.limit, 10) || 20, 1), 50);
+        const rag = new RealEstateRAG(env);
+        const result = await rag.query(query.trim(), { limit, ownerId });
+        return Response.json({
+          ...result,
+          parsed_filters: extractParsedIntent(query.trim()),
+          detected_intent: detectListingIntent(query.trim()),
+        }, { headers: corsHeaders });
+      }
+
       const endpoints = [
         'POST /api/vectorize - Start incremental vectorization',
         'POST /api/vectorize/full - Start full or incremental vectorization (body: {"mode": "incremental|full"})',
@@ -494,6 +517,7 @@ export default {
         'POST /api/query - Run SQL query',
         'GET /api/properties - List properties',
         'POST /search - Search (RAG)',
+        'POST /api/rag - Admin RAG query without owner_id (eval/debug)',
         'GET /test - Test endpoint'
       ];
 
