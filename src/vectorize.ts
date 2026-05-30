@@ -311,7 +311,7 @@ const BUYERS_BASE_QUERY = `
          d.name as district_name,
          m.name as municipality_name,
          p.name as province_name,
-         c.name as customer_name, c.phone as customer_phone
+         c.name as customer_name, c.primary_phone_num as customer_phone
   FROM buyers b
   LEFT JOIN districts d ON b.district_id = d.id
   LEFT JOIN municipalities m ON b.municipal_id = m.id
@@ -375,7 +375,7 @@ const TENANTS_BASE_QUERY = `
          d.name as district_name,
          m.name as municipality_name,
          p.name as province_name,
-         c.name as customer_name, c.phone as customer_phone
+         c.name as customer_name, c.primary_phone_num as customer_phone
   FROM tenants t
   LEFT JOIN districts d ON t.district_id = d.id
   LEFT JOIN municipalities m ON t.municipal_id = m.id

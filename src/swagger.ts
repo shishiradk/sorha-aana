@@ -47,7 +47,7 @@ export const openApiSpec = {
         "/search": {
             "post": {
                 "summary": "AI Semantic Search",
-                "description": "Search for properties using natural language. Requires owner_id and Authorization header.",
+                "description": "Search for properties or leads using natural language. Role is auto-detected from the query — no need to set it manually. Rate limited to 20 requests/minute per API key.",
                 "security": [{ "BearerAuth": [] }],
                 "requestBody": {
                     "required": true,
@@ -58,7 +58,7 @@ export const openApiSpec = {
                                 "properties": {
                                     "query": {
                                         "type": "string",
-                                        "description": "Natural language search query",
+                                        "description": "Natural language search query. Role is auto-detected: 'house in pokhara' → buyer mode; 'who wants land' → seller mode.",
                                         "example": "3 bedroom house in Pokhara under 5 crores"
                                     },
                                     "owner_id": {
@@ -68,13 +68,18 @@ export const openApiSpec = {
                                     },
                                     "limit": {
                                         "type": "integer",
-                                        "description": "Max results to return (1-100, default 20)",
+                                        "description": "Max results to return (1-50, default 20)",
                                         "example": 20
                                     },
                                     "offset": {
                                         "type": "integer",
                                         "description": "Pagination offset (default 0)",
                                         "example": 0
+                                    },
+                                    "role": {
+                                        "type": "string",
+                                        "enum": ["buyer", "seller"],
+                                        "description": "Optional override. buyer = find properties; seller = find potential buyers/tenants. Auto-detected from query if omitted."
                                     }
                                 },
                                 "required": ["query", "owner_id"]
@@ -91,17 +96,66 @@ export const openApiSpec = {
                                     "type": "object",
                                     "properties": {
                                         "query": { "type": "string" },
-                                        "answer": { "type": "string" },
-                                        "properties": { "type": "array", "items": { "type": "object" } },
+                                        "answer": { "type": "string", "description": "AI-generated summary of the results" },
+                                        "properties": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": { "type": "integer" },
+                                                    "source_table": { "type": "string", "enum": ["sellers", "rental_owners", "buyers", "tenants", "agents"] },
+                                                    "listing_type": { "type": "string", "enum": ["Sale", "Rent", "Buyer", "Tenant", "Agent"] },
+                                                    "title": { "type": "string" },
+                                                    "location": { "type": "string" },
+                                                    "price": { "type": "string" },
+                                                    "property_type": { "type": "string" },
+                                                    "bedrooms": { "type": "integer" },
+                                                    "area": { "type": "string" },
+                                                    "name": { "type": "string", "description": "Seller/owner contact name" },
+                                                    "phone": { "type": "string", "description": "Seller/owner contact phone" },
+                                                    "distance_km": { "type": "number", "description": "Distance from searched location in km" },
+                                                    "similarity": { "type": "number", "description": "Vector similarity score (0-1)" }
+                                                }
+                                            }
+                                        },
                                         "total_results": { "type": "integer" },
-                                        "listing_intent": { "type": "string" }
+                                        "listing_intent": { "type": "string", "enum": ["sale", "rent", "any"] },
+                                        "role": { "type": "string", "enum": ["buyer", "seller"], "description": "Auto-detected or overridden role used for this search" },
+                                        "cached": { "type": "boolean", "description": "true if result was served from KV cache" },
+                                        "page_size": { "type": "integer" },
+                                        "page_offset": { "type": "integer" }
                                     }
                                 }
                             }
                         }
                     },
                     "400": { "description": "Missing query or invalid owner_id" },
-                    "401": { "description": "Unauthorized — missing or invalid API key" }
+                    "401": { "description": "Unauthorized — missing or invalid API key" },
+                    "429": { "description": "Rate limit exceeded — max 20 requests/minute per API key" }
+                }
+            }
+        },
+        "/cache/clear": {
+            "post": {
+                "summary": "Clear Cache",
+                "description": "Delete all KV cache entries (query cache + AI answer cache). Useful after data updates.",
+                "security": [{ "BearerAuth": [] }],
+                "responses": {
+                    "200": {
+                        "description": "Cache cleared",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "deleted": { "type": "integer" },
+                                        "message": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": { "description": "Unauthorized" }
                 }
             }
         },

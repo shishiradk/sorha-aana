@@ -1,39 +1,58 @@
 {
-  "compatibility_date": "2026-01-07",
-  "main": "src/index.ts",
-  "name": "sorha-aana-worker",
-  "upload_source_maps": true,
-  "compatibility_flags": ["nodejs_compat"],
-  
-  "ai": {
-    "binding": "AI"
-  },
-  
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "397481d18f19453494a365d966e758ef"
-    }
-  ],
-  
-  "vectorize": [
-    {
-      "binding": "VECTORIZE",
-      "index_name": "sorha-index"
-    }
-  ],
-  
-  "vars": {
-    "ENVIRONMENT": "development",
-    "MAX_RESULTS": "10",
-    "PRICE_TOLERANCE": "0.1"
-  },
-  
-  "observability": {
-    "enabled": true
-  },
-
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  }
+	"compatibility_date": "2026-01-07",
+	"main": "src/index.ts",
+	"name": "sorha-aana-worker",
+	"account_id": "2556e98323b786f79971d0e80562fd77",
+	"upload_source_maps": true,
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"hyperdrive": [
+		{
+			"binding": "HYPERDRIVE",
+			"id": "397481d18f19453494a365d966e758ef"
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "sorha-index"
+		}
+	],
+	"vars": {
+		"ENVIRONMENT": "production",
+		"MAX_RESULTS": "10",
+		"PRICE_TOLERANCE": "0.1",
+		"CACHE_VERSION": "1"
+	},
+	"observability": {
+		"enabled": true
+	},
+	"triggers": {
+		"crons": [
+			"*/5 * * * *"
+		]
+	},
+	"kv_namespaces": [
+		{
+			"binding": "SORHAAANA_CACHE",
+			"id": "ff20df9b953b4c148a21d4d87bda90ab"
+		}
+	],
+	"unsafe": {
+		"bindings": [
+			{
+				"name": "RATE_LIMITER",
+				"type": "ratelimit",
+				"namespace_id": "0",
+				"simple": {
+					"limit": 20,
+					"period": 60
+				}
+			}
+		]
+	}
 }

@@ -78,9 +78,9 @@ export async function geocodeLocation(
  * Returns the location name to geocode, or null if no location intent
  */
 export function extractLocationFromQuery(query: string): string | null {
-  const stopWords = /\b(?:with|under|below|above|over|more|less|upto|up\s+to|within|budget|price|cost|rent|sale|buy|sell|house|land|flat|room|apartment|property|properties|bedroom|bhk|ropani|aana|sqft|sq|storey|floor|facing|furnished|road|commercial|residential|agriculture|\d)/i;
+  const stopWords = /\b(?:with|under|below|above|over|more|less|upto|up\s+to|within|budget|price|cost|rent|sale|buy|sell|house|land|flat|room|apartment|property|properties|bedroom|bhk|ropani|aana|sqft|sq|storey|floor|facing|furnished|road|commercial|residential|agriculture|buyers?|tenants?|sellers?|leads?|clients?|\d)/i;
   // Filler words to strip from extracted location phrases
-  const fillerWords = new Set(['the', 'a', 'an', 'this', 'that', 'area', 'region', 'place', 'zone', 'side', 'part', 'some', 'any', 'all', 'list', 'show', 'me', 'find', 'get']);
+  const fillerWords = new Set(['the', 'a', 'an', 'this', 'that', 'area', 'region', 'place', 'zone', 'side', 'part', 'some', 'any', 'all', 'list', 'show', 'me', 'find', 'get', 'who', 'for']);
 
   const cleanLocation = (loc: string): string | null => {
     // Strip trailing stop words (e.g., "kaukhola over" → "kaukhola")

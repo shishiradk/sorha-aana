@@ -4,7 +4,7 @@ export const html = `
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sorha Aana - Real Estate AI</title>
+    <title>Nepal Real Estate AI</title>
     <style>
         :root {
             --bg: #ffffff;
@@ -61,7 +61,7 @@ export const html = `
             background: #fff;
             color: #000;
         }
-        button {
+        .search-box button {
             position: absolute;
             right: 10px;
             top: 50%;
@@ -75,7 +75,7 @@ export const html = `
             font-weight: bold;
             font-family: inherit;
         }
-        button:hover { opacity: 0.8; }
+        .search-box button:hover { opacity: 0.8; }
         #loading {
             display: none;
             text-align: center;
@@ -102,7 +102,21 @@ export const html = `
             font-size: 0.85rem;
             color: var(--muted);
             margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
         }
+        .cache-badge {
+            font-size: 0.72rem;
+            font-weight: bold;
+            padding: 2px 7px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .cache-hit  { background: #e6f4ec; color: var(--accent); border: 1px solid var(--accent); }
+        .cache-miss { background: #f0f0f0; color: #555; border: 1px solid #aaa; }
+        .resp-time  { font-size: 0.75rem; color: #aaa; }
         .property-grid {
             display: grid;
             gap: 0;
@@ -231,13 +245,115 @@ export const html = `
         }
         .auth-ok { color: var(--accent); }
         .auth-no { color: #c00; }
+        .property-card { cursor: pointer; }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.55);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 40px 20px;
+        }
+        .modal-overlay.open { display: block; }
+        .modal {
+            background: #fff;
+            border: 2px solid #000;
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 30px;
+            position: relative;
+            font-family: "Courier New", Courier, monospace;
+        }
+        .modal-close {
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            font-size: 1.4rem;
+            cursor: pointer;
+            background: none;
+            border: none;
+            font-family: inherit;
+            font-weight: bold;
+            line-height: 1;
+        }
+        .modal-close:hover { color: #c00; }
+        .modal-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+            padding-right: 30px;
+        }
+        .modal-price {
+            font-size: 1.4rem;
+            font-weight: bold;
+            border-bottom: 2px solid #000;
+            padding-bottom: 10px;
+            margin-bottom: 16px;
+        }
+        .modal-section {
+            margin-bottom: 14px;
+        }
+        .modal-section-label {
+            font-size: 0.75rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+        .modal-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 24px;
+            font-size: 0.9rem;
+        }
+        .modal-field { display: flex; flex-direction: column; }
+        .modal-field-label { font-size: 0.72rem; text-transform: uppercase; color: var(--muted); }
+        .modal-field-value { font-weight: bold; }
+        .modal-remarks {
+            font-size: 0.88rem;
+            color: #333;
+            line-height: 1.6;
+            border-left: 3px solid var(--accent);
+            padding-left: 10px;
+        }
+        .modal-amenities { display: flex; flex-wrap: wrap; gap: 4px; }
+        .modal-contact {
+            background: #f5f5f5;
+            border-left: 3px solid var(--accent);
+            padding: 8px 12px;
+            font-size: 0.9rem;
+        }
+        .modal-id {
+            font-size: 0.75rem;
+            color: #999;
+            margin-top: 16px;
+            border-top: 1px solid #eee;
+            padding-top: 8px;
+        }
+        .role-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.78rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 5px 10px;
+            border: 1px solid #ccc;
+            color: var(--muted);
+            margin-bottom: 12px;
+        }
+        .role-indicator.buyer { border-color: var(--accent); color: var(--accent); }
+        .role-indicator.seller { border-color: #111; color: #111; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Sorha Aana</h1>
-            <p>REAL ESTATE AI &mdash; KASKI, NEPAL</p>
+            <h1>Real Estate AI</h1>
+            <p>AI-POWERED PROPERTY SEARCH &mdash; KASKI, NEPAL</p>
         </header>
 
         <div class="auth-bar">
@@ -251,6 +367,8 @@ export const html = `
             </div>
             <span id="authStatus" class="auth-status auth-no">NOT AUTHORIZED</span>
         </div>
+
+        <div id="roleIndicator" class="role-indicator" style="display:none"></div>
 
         <form id="searchForm" class="search-box">
             <input type="text" id="query" placeholder="Search properties..." required autocomplete="off">
@@ -271,13 +389,115 @@ export const html = `
         </div>
     </div>
 
+    <div id="modalOverlay" class="modal-overlay" onclick="closeModal(event)">
+        <div class="modal" id="modalBox">
+            <button class="modal-close" onclick="closeModalDirect()">&times;</button>
+            <div id="modalContent"></div>
+        </div>
+    </div>
+
     <script>
+        var allProperties = [];
+
+        function openModal(idx) {
+            var p = allProperties[idx];
+            if (!p) return;
+            var isPerson = ['Buyer','Tenant','Agent'].indexOf(p.listing_type) !== -1;
+            var priceLabel = p.listing_type === 'Rent' ? 'Rent' : p.listing_type === 'Buyer' ? 'Budget' : p.listing_type === 'Tenant' ? 'Rent Budget' : 'Price';
+            var priceText = val(p.price) || (isPerson ? 'Flexible' : 'Price on request');
+
+            var html = '<div class="modal-title">' + (p.title || 'Untitled') + '</div>';
+            html += '<div class="modal-price">' + priceLabel + ': ' + priceText + '</div>';
+
+            // Key fields grid
+            var fields = [];
+            if (val(p.listing_type))      fields.push(['Type', p.listing_type]);
+            if (val(p.property_type))     fields.push(['Property', p.property_type]);
+            if (val(p.property_category)) fields.push(['Category', p.property_category]);
+            if (val(p.bedrooms))          fields.push(['Bedrooms', p.bedrooms]);
+            if (val(p.layout))            fields.push(['Layout', p.layout]);
+            if (val(p.area))              fields.push(['Area', p.area]);
+            if (val(p.house_area))        fields.push(['Built-up', p.house_area]);
+            if (val(p.land_area))         fields.push(['Land Area', p.land_area]);
+            if (val(p.house_storey))      fields.push(['Storeys', p.house_storey]);
+            if (val(p.facing))            fields.push(['Facing', p.facing]);
+            if (val(p.road_access))       fields.push(['Road', p.road_access]);
+            if (val(p.parking) && p.parking !== 'NO') fields.push(['Parking', p.parking]);
+            if (p.furnished === 'YES')    fields.push(['Furnished', 'Yes']);
+            if (val(p.compound))          fields.push(['Compound', p.compound]);
+            if (val(p.kitchen))           fields.push(['Kitchen', p.kitchen]);
+            if (val(p.living_room))       fields.push(['Living Room', p.living_room]);
+            if (val(p.district))          fields.push(['District', p.district]);
+            if (val(p.municipality))      fields.push(['Municipality', p.municipality]);
+            if (val(p.province))          fields.push(['Province', p.province]);
+            if (p.distance_km != null)    fields.push(['Distance', p.distance_km.toFixed(1) + ' km away']);
+
+            if (fields.length) {
+                html += '<div class="modal-section">';
+                html += '<div class="modal-row">';
+                for (var i = 0; i < fields.length; i++) {
+                    html += '<div class="modal-field"><span class="modal-field-label">' + fields[i][0] + '</span><span class="modal-field-value">' + fields[i][1] + '</span></div>';
+                }
+                html += '</div></div>';
+            }
+
+            // Location
+            if (val(p.location)) {
+                html += '<div class="modal-section"><div class="modal-section-label">Location</div><div>' + p.location + '</div></div>';
+            }
+
+            // Amenities
+            if (Array.isArray(p.amenities) && p.amenities.length) {
+                html += '<div class="modal-section"><div class="modal-section-label">Amenities</div><div class="modal-amenities">';
+                for (var i = 0; i < p.amenities.length; i++) {
+                    if (p.amenities[i] && p.amenities[i].trim()) html += '<span class="tag">' + p.amenities[i].trim() + '</span>';
+                }
+                html += '</div></div>';
+            }
+
+            // Remarks
+            var remarks = val(p.remarks) || val(p.rental_purpose) || null;
+            if (remarks) {
+                html += '<div class="modal-section"><div class="modal-section-label">Remarks</div><div class="modal-remarks">' + remarks + '</div></div>';
+            }
+
+            // Contact (person cards)
+            if (val(p.name) || val(p.phone)) {
+                html += '<div class="modal-section"><div class="modal-section-label">Contact</div><div class="modal-contact">';
+                if (val(p.name))  html += '<div><strong>' + p.name + '</strong></div>';
+                if (val(p.phone)) html += '<div>' + p.phone + '</div>';
+                html += '</div></div>';
+            }
+
+            html += '<div class="modal-id">ID: ' + p.id + ' &nbsp;&bull;&nbsp; Table: ' + p.source_table + ' &nbsp;&bull;&nbsp; Match: ' + Math.round((p.similarity || 0) * 100) + '%</div>';
+
+            document.getElementById('modalContent').innerHTML = html;
+            document.getElementById('modalOverlay').classList.add('open');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeModal(e) {
+            if (e.target === document.getElementById('modalOverlay')) closeModalDirect();
+        }
+        function closeModalDirect() {
+            document.getElementById('modalOverlay').classList.remove('open');
+            document.body.style.overflow = '';
+        }
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModalDirect(); });
+
         const form = document.getElementById('searchForm');
         const loading = document.getElementById('loading');
         const resultArea = document.getElementById('resultArea');
         const aiText = document.getElementById('aiText');
         const listings = document.getElementById('listings');
         const resultSummary = document.getElementById('resultSummary');
+
+        function showRoleIndicator(role) {
+            var el = document.getElementById('roleIndicator');
+            el.className = 'role-indicator ' + role;
+            el.textContent = role === 'seller' ? 'MODE: FINDING LEADS' : 'MODE: FINDING PROPERTIES';
+            el.style.display = 'inline-flex';
+        }
 
         // Check if value is meaningful (not null/undefined/empty/0)
         function val(v) {
@@ -341,10 +561,11 @@ export const html = `
             // Location
             var location = val(p.location) || val(p.district) || 'Nepal';
 
-            // Contact
+            // Contact — show for all listing types
             var contactHtml = '';
-            if (isPerson && val(p.phone)) {
-                contactHtml = '<div class="card-contact">Contact: ' + p.phone + '</div>';
+            if (val(p.phone)) {
+                var contactLabel = isPerson ? 'Contact' : 'Seller';
+                contactHtml = '<div class="card-contact">' + contactLabel + ': ' + (val(p.name) ? p.name + ' &mdash; ' : '') + p.phone + '</div>';
             }
 
             var html = '<div class="property-card">';
@@ -423,11 +644,13 @@ export const html = `
 
             try {
                 var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey };
+                var t0 = Date.now();
                 var res = await fetch('/search', {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify({ query: query, owner_id: ownerId })
                 });
+                var elapsed = Date.now() - t0;
 
                 var data = await res.json();
 
@@ -445,17 +668,29 @@ export const html = `
                 aiText.innerHTML = answerText.replace(/\\n/g, '<br>');
                 document.querySelector('.ai-response').style.display = 'block';
 
-                // Summary
+                // Show auto-detected role indicator
+                showRoleIndicator(data.role || 'buyer');
+
+                // Summary + cache badge + response time
                 var intentLabel = data.listing_intent ? ' (' + data.listing_intent + ')' : '';
-                resultSummary.textContent = (data.total_results || 0) + ' results found' + intentLabel;
+                var cacheClass = data.cached ? 'cache-hit' : 'cache-miss';
+                var cacheText  = data.cached ? 'CACHED' : 'LIVE';
+                resultSummary.innerHTML =
+                    '<span>' + (data.total_results || 0) + ' results found' + intentLabel + '</span>' +
+                    '<span class="cache-badge ' + cacheClass + '">' + cacheText + '</span>' +
+                    '<span class="resp-time">' + elapsed + 'ms</span>';
 
                 // Render listings
                 if (!data.properties || data.properties.length === 0) {
-                    listings.innerHTML = '<div class="no-results">No matching properties found. Try a different query.</div>';
+                    var noResultMsg = data.role === 'seller'
+                        ? 'No matching buyers or tenants found. Try a different query.'
+                        : 'No matching properties found. Try a different query.';
+                    listings.innerHTML = '<div class="no-results">' + noResultMsg + '</div>';
                 } else {
+                    allProperties = data.properties;
                     var cards = '';
                     for (var i = 0; i < data.properties.length; i++) {
-                        cards += renderCard(data.properties[i]);
+                        cards += '<div onclick="openModal(' + i + ')">' + renderCard(data.properties[i]) + '</div>';
                     }
                     listings.innerHTML = cards;
                 }

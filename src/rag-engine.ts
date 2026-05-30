@@ -4,12 +4,14 @@
 // Supports proximity search via Nominatim geocoding + haversine distance
 import { queryAll } from './db-utils';
 import { formatPrice, priceToNPR } from './vectorize';
-import { geocodeLocation, extractLocationFromQuery, haversineKm, haversineSQL } from './geocoding';
+import { geocodeLocation, extractLocationFromQuery, haversineSQL } from './geocoding';
 
 export interface Env {
   HYPERDRIVE: any;
   VECTORIZE: VectorizeIndex;
   AI: any;
+  SORHAAANA_CACHE: KVNamespace;
+  CACHE_VERSION?: string;
 }
 
 export class RealEstateRAG {
@@ -82,8 +84,8 @@ export class RealEstateRAG {
     }
   }
 
-  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }> {
-    console.log(`Searching: "${query}" [intent: ${intent || 'any'}] [owner: ${ownerId || 'all'}]`);
+  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null, role?: 'buyer' | 'seller'): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }> {
+    console.log(`Searching: "${query}" [intent: ${intent || 'any'}] [owner: ${ownerId || 'all'}] [role: ${role || 'any'}]`);
 
     // Owner filter helper — appends AND owner_id = N when scoped
     const ownerFilter = (alias: string) => ownerId ? ` AND ${alias}.owner_id = ${ownerId}` : '';
@@ -93,7 +95,8 @@ export class RealEstateRAG {
     let searchCoords: { lat: number; lng: number } | null = null;
     let geocodeFailed = false;
     let outsideCoverage = false;
-    if (locationPhrase) {
+    // Seller role searches buyers/tenants who have no lat/lng — skip all geocoding
+    if (locationPhrase && role !== 'seller') {
       console.log(`Location detected: "${locationPhrase}" — geocoding...`);
 
       // Tier 0: Local geocoding — use average coords from our own DB data
@@ -138,7 +141,7 @@ export class RealEstateRAG {
     let nearbyRentalIds: number[] = [];
     const nearbyDistances = new Map<string, number>(); // key -> distance in km
 
-    if (searchCoords) {
+    if (searchCoords && role !== 'seller') {
       const radiusKm = 5; // 5km radius
       const { lat, lng } = searchCoords;
       const distExpr = haversineSQL('latitude', 'longitude');
@@ -185,11 +188,26 @@ export class RealEstateRAG {
     }
 
     const wantsAgent = /\bagent\b/i.test(query);
-    const queryEmbedding = await this.generateQueryEmbedding(query);
 
-    const vectorResults = queryEmbedding
-      ? await this.env.VECTORIZE.query(queryEmbedding, { topK: 30, returnMetadata: 'all' })
-      : { matches: [] };
+    // For seller role, rewrite the embedding query to match buyer/tenant vector language.
+    // Buyer vectors contain "looking to buy, property buyer, purchase" — a seller-phrased
+    // query like "who wants land?" won't match those without this nudge.
+    const embeddingQuery = role === 'seller'
+      ? `buyer tenant looking to buy rent ${query}`
+      : query;
+    const queryEmbedding = await this.generateQueryEmbedding(embeddingQuery);
+
+    // Use higher topK for seller role — buyers/tenants are ~15% of vectors, need wider net
+    // Max topK with returnMetadata='all' is 50
+    const topK = role === 'seller' ? 50 : 30;
+    let vectorResults: { matches: any[] } = { matches: [] };
+    if (queryEmbedding) {
+      try {
+        vectorResults = await this.env.VECTORIZE.query(queryEmbedding, { topK, returnMetadata: 'all' });
+      } catch (err: any) {
+        console.warn('Vectorize query failed, falling back to text/SQL search:', err.message);
+      }
+    }
 
     console.log(`Vector search returned ${vectorResults.matches.length} matches`);
 
@@ -209,8 +227,21 @@ export class RealEstateRAG {
       const id = meta.source_id;
       if (!id) continue;
 
-      if (intent === 'rent' && table !== 'rental_owners') continue;
-      if (intent === 'sale' && table !== 'sellers') continue;
+      if (role === 'buyer') {
+        // Buyer: only property listings — skip demand-side tables
+        if (table === 'buyers' || table === 'tenants') continue;
+        if (intent === 'rent' && table !== 'rental_owners') continue;
+        if (intent === 'sale' && table !== 'sellers') continue;
+      } else if (role === 'seller') {
+        // Seller: only demand-side tables — skip property listings
+        if (table === 'sellers' || table === 'rental_owners') continue;
+        if (intent === 'sale' && table === 'tenants') continue;   // sale intent → buyers only
+        if (intent === 'rent' && table === 'buyers') continue;    // rent intent → tenants only
+      } else {
+        // No role specified: existing behaviour
+        if (intent === 'rent' && table !== 'rental_owners') continue;
+        if (intent === 'sale' && table !== 'sellers') continue;
+      }
       if (table === 'agents' && !wantsAgent) continue;
 
       const key = `${table}_${id}`;
@@ -271,48 +302,130 @@ export class RealEstateRAG {
         }
       };
 
-      if (intent !== 'rent') {
-        try {
-          const fuzzy = buildFuzzySQL('property_address');
-          const { results: textRows } = await queryAll(this.env,
-            `SELECT s.id FROM sellers s ${fuzzy.sql}${ownerFilter('s')} LIMIT 20`,
-            fuzzy.params
-          );
-          for (const r of textRows as any[]) {
-            sellerIds.add(r.id);
-            const key = `sellers_${r.id}`;
-            if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
-            textMatchedIds.add(key);
+      if (role !== 'seller') {
+        // Buyer role: text-search property listings by address
+        if (intent !== 'rent') {
+          try {
+            const fuzzy = buildFuzzySQL('property_address');
+            const { results: textRows } = await queryAll(this.env,
+              `SELECT s.id FROM sellers s ${fuzzy.sql}${ownerFilter('s')} LIMIT 20`,
+              fuzzy.params
+            );
+            for (const r of textRows as any[]) {
+              sellerIds.add(r.id);
+              const key = `sellers_${r.id}`;
+              if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+              textMatchedIds.add(key);
+            }
+            textMatchCount += (textRows as any[]).length;
+            console.log(`Text search: ${(textRows as any[]).length} sellers for "${locationPhrase}"`);
+          } catch (err: any) {
+            console.warn('Text seller search failed:', err.message);
           }
-          textMatchCount += (textRows as any[]).length;
-          console.log(`Text search: ${(textRows as any[]).length} sellers for "${locationPhrase}"`);
-        } catch (err: any) {
-          console.warn('Text seller search failed:', err.message);
         }
-      }
-      if (intent !== 'sale') {
-        try {
-          const fuzzy = buildFuzzySQL('address');
-          const { results: textRows } = await queryAll(this.env,
-            `SELECT ro.id FROM rental_owners ro ${fuzzy.sql}${ownerFilter('ro')} LIMIT 20`,
-            fuzzy.params
-          );
-          for (const r of textRows as any[]) {
-            rentalIds.add(r.id);
-            const key = `rental_owners_${r.id}`;
-            if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
-            textMatchedIds.add(key);
+        if (intent !== 'sale') {
+          try {
+            const fuzzy = buildFuzzySQL('address');
+            const { results: textRows } = await queryAll(this.env,
+              `SELECT ro.id FROM rental_owners ro ${fuzzy.sql}${ownerFilter('ro')} LIMIT 20`,
+              fuzzy.params
+            );
+            for (const r of textRows as any[]) {
+              rentalIds.add(r.id);
+              const key = `rental_owners_${r.id}`;
+              if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+              textMatchedIds.add(key);
+            }
+            textMatchCount += (textRows as any[]).length;
+            console.log(`Text search: ${(textRows as any[]).length} rentals for "${locationPhrase}"`);
+          } catch (err: any) {
+            console.warn('Text rental search failed:', err.message);
           }
-          textMatchCount += (textRows as any[]).length;
-          console.log(`Text search: ${(textRows as any[]).length} rentals for "${locationPhrase}"`);
-        } catch (err: any) {
-          console.warn('Text rental search failed:', err.message);
+        }
+      } else {
+        // Seller role: text-search demand-side tables by seeking_address.
+        // No ownerFilter — buyers/tenants may not have owner_id column or may be shared across agencies.
+        if (intent !== 'rent') {
+          try {
+            const { results: textRows } = await queryAll(this.env,
+              `SELECT b.id FROM buyers b WHERE LOWER(b.seeking_address) LIKE LOWER(?) LIMIT 20`,
+              [likeKw]
+            );
+            for (const r of textRows as any[]) {
+              buyerIds.add(r.id);
+              const key = `buyers_${r.id}`;
+              if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+              textMatchedIds.add(key);
+            }
+            textMatchCount += (textRows as any[]).length;
+            console.log(`Text search: ${(textRows as any[]).length} buyers for "${locationPhrase}"`);
+          } catch (err: any) {
+            console.warn('Text buyer search failed:', err.message);
+          }
+        }
+        if (intent !== 'sale') {
+          try {
+            const { results: textRows } = await queryAll(this.env,
+              `SELECT t.id FROM tenants t WHERE LOWER(t.seeking_address) LIKE LOWER(?) LIMIT 20`,
+              [likeKw]
+            );
+            for (const r of textRows as any[]) {
+              tenantIds.add(r.id);
+              const key = `tenants_${r.id}`;
+              if (!scoreMap.has(key)) scoreMap.set(key, 0.75);
+              textMatchedIds.add(key);
+            }
+            textMatchCount += (textRows as any[]).length;
+            console.log(`Text search: ${(textRows as any[]).length} tenants for "${locationPhrase}"`);
+          } catch (err: any) {
+            console.warn('Text tenant search failed:', err.message);
+          }
         }
       }
     }
 
-    // Step 2: Geocoding fallback — only run if text search returned few results (< 3)
-    // Finds physically nearby properties even if their address name differs
+    // Step 2 (seller role): SQL-primary fallback for buyers/tenants.
+    // Buyers/tenants may not be in Vectorize (no tracking column → cron re-vectorizes all, may time out).
+    // Direct SQL search by property_type + general fallback ensures seller role always returns results.
+    if (role === 'seller') {
+      const propTypeKw = extractPropertyType(query);
+
+      if (intent !== 'rent' && buyerIds.size < 5) {
+        try {
+          const sql = propTypeKw
+            ? `SELECT b.id FROM buyers b WHERE LOWER(b.property_type) LIKE LOWER(?) ORDER BY b.id DESC LIMIT 15`
+            : `SELECT b.id FROM buyers b ORDER BY b.id DESC LIMIT 15`;
+          const params = propTypeKw ? [`%${propTypeKw}%`] : [];
+          const { results: bRows } = await queryAll(this.env, sql, params);
+          for (const r of bRows as any[]) {
+            buyerIds.add(r.id);
+            if (!scoreMap.has(`buyers_${r.id}`)) scoreMap.set(`buyers_${r.id}`, 0.5);
+          }
+          console.log(`Seller SQL fallback: ${(bRows as any[]).length} buyers (propType: ${propTypeKw || 'any'})`);
+        } catch (err: any) {
+          console.warn('Seller buyer SQL fallback failed:', err.message);
+        }
+      }
+
+      if (intent !== 'sale' && tenantIds.size < 5) {
+        try {
+          const sql = propTypeKw
+            ? `SELECT t.id FROM tenants t WHERE LOWER(t.property_type) LIKE LOWER(?) ORDER BY t.id DESC LIMIT 15`
+            : `SELECT t.id FROM tenants t ORDER BY t.id DESC LIMIT 15`;
+          const params = propTypeKw ? [`%${propTypeKw}%`] : [];
+          const { results: tRows } = await queryAll(this.env, sql, params);
+          for (const r of tRows as any[]) {
+            tenantIds.add(r.id);
+            if (!scoreMap.has(`tenants_${r.id}`)) scoreMap.set(`tenants_${r.id}`, 0.5);
+          }
+          console.log(`Seller SQL fallback: ${(tRows as any[]).length} tenants (propType: ${propTypeKw || 'any'})`);
+        } catch (err: any) {
+          console.warn('Seller tenant SQL fallback failed:', err.message);
+        }
+      }
+    }
+
+    // Step 3: Geocoding fallback — only for buyer role (seller role skips geocoding entirely)
     if (locationPhrase && textMatchCount < 3 && searchCoords) {
       console.log(`Text matched only ${textMatchCount} — expanding with geocoding radius`);
       for (const id of nearbySellerIds) {
@@ -348,7 +461,8 @@ export class RealEstateRAG {
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT s.*, d.name as district_name, m.name as municipality_name,
-                p.name as province_name, c.name as customer_name
+                p.name as province_name, c.name as customer_name,
+                c.primary_phone_num as customer_phone
          FROM sellers s
          LEFT JOIN districts d ON s.district_id = d.id
          LEFT JOIN municipalities m ON s.municipal_id = m.id
@@ -399,6 +513,8 @@ export class RealEstateRAG {
           remarks: row.property_remarks || null,
           status: row.status,
           similarity: scoreMap.get(`sellers_${row.id}`) || 0,
+          name: row.customer_name || null,
+          phone: row.customer_phone || null,
           distance_km: distKm != null ? Math.round(distKm * 100) / 100 : null,
         });
       }
@@ -410,7 +526,8 @@ export class RealEstateRAG {
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT ro.*, d.name as district_name, m.name as municipality_name,
-                p.name as province_name, c.name as customer_name
+                p.name as province_name, c.name as customer_name,
+                c.primary_phone_num as customer_phone
          FROM rental_owners ro
          LEFT JOIN districts d ON ro.district_id = d.id
          LEFT JOIN municipalities m ON ro.municipal_id = m.id
@@ -457,6 +574,8 @@ export class RealEstateRAG {
           remarks: row.remarks || null,
           rental_purpose: row.rental_purpose || null,
           status: row.status,
+          name: row.customer_name || null,
+          phone: row.customer_phone || null,
           similarity: scoreMap.get(`rental_owners_${row.id}`) || 0,
           distance_km: distKm != null ? Math.round(distKm * 100) / 100 : null,
         });
@@ -470,12 +589,12 @@ export class RealEstateRAG {
       try {
         const { results: rows } = await queryAll(this.env,
           `SELECT b.*, d.name as district_name, m.name as municipality_name,
-                  c.name as customer_name, c.phone as customer_phone
+                  c.name as customer_name, c.primary_phone_num as customer_phone
            FROM buyers b
            LEFT JOIN districts d ON b.district_id = d.id
            LEFT JOIN municipalities m ON b.municipal_id = m.id
            LEFT JOIN customers c ON b.customer_id = c.id
-           WHERE b.id IN (${placeholders})${ownerFilter('b')}`, ids);
+           WHERE b.id IN (${placeholders})${role !== 'seller' ? ownerFilter('b') : ''}`, ids);
         for (const row of rows) {
           const budgetMax = row.maximum_budget ? formatPrice(row.maximum_budget, row.maximum_budget_unit) : null;
           const budgetMin = row.minimum_budget ? formatPrice(row.minimum_budget, row.minimum_budget_unit) : null;
@@ -504,12 +623,12 @@ export class RealEstateRAG {
       try {
         const { results: rows } = await queryAll(this.env,
           `SELECT t.*, d.name as district_name, m.name as municipality_name,
-                  c.name as customer_name, c.phone as customer_phone
+                  c.name as customer_name, c.primary_phone_num as customer_phone
            FROM tenants t
            LEFT JOIN districts d ON t.district_id = d.id
            LEFT JOIN municipalities m ON t.municipal_id = m.id
            LEFT JOIN customers c ON t.customer_id = c.id
-           WHERE t.id IN (${placeholders})${ownerFilter('t')}`, ids);
+           WHERE t.id IN (${placeholders})${role !== 'seller' ? ownerFilter('t') : ''}`, ids);
         for (const row of rows) {
           const rentMax = row.maximum_rent || row.max_rent;
           results.push({
@@ -671,7 +790,7 @@ export class RealEstateRAG {
       });
     };
 
-    if (locationPhrase) {
+    if (locationPhrase && role !== 'seller') {
       if (textMatchedIds.size > 0) {
         // We have text matches — keep those + proximity results that contain the location word
         const locWords = locationPhrase.toLowerCase().split(/\s+/);
@@ -735,11 +854,14 @@ export class RealEstateRAG {
       });
     }
 
-    // Hard-filter by listing intent (sale vs rent)
-    if (intent === 'sale') {
-      results = results.filter(p => p.listing_type === 'Sale');
-    } else if (intent === 'rent') {
-      results = results.filter(p => p.listing_type === 'Rent');
+    // Hard-filter by listing intent (sale vs rent) — skip for seller role:
+    // buyers have listing_type='Buyer' and tenants have listing_type='Tenant', not 'Sale'/'Rent'
+    if (role !== 'seller') {
+      if (intent === 'sale') {
+        results = results.filter(p => p.listing_type === 'Sale');
+      } else if (intent === 'rent') {
+        results = results.filter(p => p.listing_type === 'Rent');
+      }
     }
 
     // Hard-filter by price when explicitly specified
@@ -763,8 +885,14 @@ export class RealEstateRAG {
     return { results, locationPhrase, geocodeFailed, outsideCoverage, filteredOut };
   }
 
-  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }): Promise<string> {
+  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }, role?: 'buyer' | 'seller'): Promise<string> {
     if (properties.length === 0) {
+      if (role === 'seller') {
+        const locDesc = locationCtx?.locationPhrase ? ` in ${locationCtx.locationPhrase}` : '';
+        if (intent === 'rent') return `We couldn't find any tenants looking for rentals${locDesc}. Try a broader location or different criteria.`;
+        if (intent === 'sale') return `We couldn't find any buyers looking to purchase${locDesc}. Try a broader location or different property type.`;
+        return `We couldn't find any buyers or tenants matching your criteria${locDesc}. Try adjusting the location or property type.`;
+      }
       // Had results but filters (price/bedrooms) eliminated all
       if (locationCtx?.filteredOut) {
         const filterParts: string[] = [];
@@ -803,7 +931,7 @@ export class RealEstateRAG {
 
     const context = properties.slice(0, contextLimit).map((p, i) => {
       const parts = [
-        `${i + 1}. ${p.title}`,
+        `${i + 1}. ${p.title} [DB ID: ${p.id}, Table: ${p.source_table}]`,
         p.location ? `   Location: ${p.location}` : null,
         p.price ? `   ${p.listing_type === 'Rent' ? 'Rent' : p.listing_type === 'Buyer' ? 'Budget' : p.listing_type === 'Tenant' ? 'Rent Budget' : 'Price'}: ${p.price}` : null,
         p.area ? `   Area: ${p.area}` : null,
@@ -815,7 +943,7 @@ export class RealEstateRAG {
         p.road_access ? `   Road: ${p.road_access}` : null,
         p.furnished ? `   Furnished: ${p.furnished}` : null,
         p.distance_km != null ? `   Distance: ${p.distance_km} km away` : null,
-        p.phone ? `   Contact: ${p.phone}` : null,
+        p.phone ? `   Contact: ${p.name ? p.name + ' — ' : ''}${p.phone}` : null,
         p.amenities?.length ? `   Amenities: ${p.amenities.join(', ')}` : null
       ].filter(Boolean);
       return parts.join('\n');
@@ -844,47 +972,55 @@ export class RealEstateRAG {
     if (parsed?.category) intentParts.push(`${parsed.category} property`);
     const parsedNote = intentParts.length ? `Parsed user filters: ${intentParts.join(', ')}.` : '';
 
-    const prompt = `You are Sorha Aana, a real estate assistant which help users to find the properties based on their needs.
+    const isSeller = role === 'seller';
+    const systemContext = isSeller
+      ? `You are a real estate AI assistant helping a property owner find potential buyers or tenants interested in their property.`
+      : `You are a real estate AI assistant helping users find properties based on their needs.`;
+
+    const prompt = `${systemContext}
 
 User query: "${question}"
 ${listingTypeNote}
 ${parsedNote}
 
-Matching properties from the database:
+${isSeller ? 'Potential buyers/tenants from the database:' : 'Matching properties from the database:'}
 ${context}
 
 INSTRUCTIONS:
-- Use ONLY the property data above. Never invent or assume any details.
+- Use ONLY the data above. Never invent or assume any details.
 - Reply in English only.
-${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties shown above — give a brief summary of each (type, price, area). Do not skip any.
+${isSeller ? `- These are BUYERS or TENANTS looking for a property. Summarise each person's requirements: location preference, budget, property type, and contact if available.
+- Group by type if needed (e.g., "Buyers:", "Tenants:").
+- At the end mention the total count and suggest the seller compare their property details against each buyer's requirements.` :
+  locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties shown above — give a brief summary of each (type, price, area). Do not skip any.
 - Group by property type if there are many (e.g., "Houses:", "Land:", "Rentals:").
 - At the end, mention the total count (e.g., "Found 12 properties in Kaukhola").` : hasFilters && locationCtx?.locationPhrase ? `- The user searched by LOCATION + FILTERS (price/area/bedrooms/features). Prioritize properties that match the filters.
 - Highlight the best filter matches first, then mention others that are in the location but don't match.
 - Clearly state each property's price, area, bedrooms, and other relevant details.` : hasFilters ? `- The user searched with FILTERS (price/area/bedrooms/features). Show properties that best match.
 - Prioritize filter-matched properties. Clearly state relevant details for each.` : `- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).`}
 - If price or bedroom filters were parsed above, explicitly state whether each property fits.
-- If distance data is available, mention how far each property is from the searched location.
+${!isSeller ? `- If distance data is available, mention how far each property is from the searched location.
 - If a property is within 1 km, note it as "very close".
 - Show prices exactly as listed. Do not convert or estimate.
-- If the user asked for rentals but a property is for sale (or vice versa), mention that clearly.
-- If no properties are a good fit, say so and suggest how to adjust the search.
-- Be concise. Do not repeat the same property details twice.
+- If the user asked for rentals but a property is for sale (or vice versa), mention that clearly.` : ''}
+- If no results are a good fit, say so and suggest how to adjust the search.
+- Be concise. Do not repeat the same details twice.
 - Never use emojis.
-- End with a short list: source table and ID for each property mentioned.`;
+- End with a short reference list using the exact DB ID and Table shown in brackets, e.g. "sellers #467, sellers #833".`;
 
     try {
       console.log(`AI prompt length: ${prompt.length} chars`);
 
-      // Cache AI responses to save neurons — keyed by prompt hash, TTL 1 hour
-      const cache = (caches as any).default;
+      // Cache AI responses in KV — keyed by prompt hash, TTL 1 hour
+      // Uses "ai:" prefix so /cache/clear can wipe both query + AI caches
       const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(prompt));
       const hashHex = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
-      const cacheKey = new Request(`https://ai-cache.internal/${hashHex}`);
+      const kvKey = `ai:${hashHex}`;
 
-      const cached = await cache.match(cacheKey);
-      if (cached) {
+      const cachedAnswer = await this.env.SORHAAANA_CACHE.get(kvKey);
+      if (cachedAnswer) {
         console.log('AI cache HIT — saving neurons');
-        return await cached.text();
+        return cachedAnswer;
       }
 
       const response = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
@@ -896,11 +1032,7 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
         return 'I found matching properties shown below, but the AI analysis is temporarily unavailable.';
       }
 
-      // Store in cache for 1 hour
-      const cacheResp = new Response(response.response, {
-        headers: { 'Cache-Control': 'max-age=3600' }
-      });
-      await cache.put(cacheKey, cacheResp);
+      await this.env.SORHAAANA_CACHE.put(kvKey, response.response, { expirationTtl: 3600 });
       console.log('AI cache MISS — stored for 1h');
 
       return response.response;
@@ -911,32 +1043,37 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
     }
   }
 
-  async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null }): Promise<any> {
+  async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null; role?: 'buyer' | 'seller' }): Promise<any> {
     const limit = Math.min(options?.limit || 20, 50);
     const offset = options?.offset || 0;
+    const role = options?.role ?? detectRole(question);
 
-    // Query-level cache — wraps the entire pipeline (vector search + DB + geocoding + AI)
-    // Key: normalized query text + owner scope + pagination. TTL: 20min.
-    // Normalization maximises hit rate: "Houses in Pokhara?" == "houses in pokhara"
+    // Smart query cache (KV):
+    // - Key: rag:<version>:<hash> — includes CACHE_VERSION for deploy-time invalidation
+    // - TTL: 3 minutes (short enough to stay fresh; long enough to help repeated queries)
+    // - Only stored when results.length > 0 (never caches empty/error responses)
+    // - Keys prefixed with "rag:" so /cache/clear can list+delete all entries
+    const cacheVersion = this.env.CACHE_VERSION || '1';
     const normalizedQ = question.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[?!.,]+$/, '');
-    const cacheInput = `rag-v1:${normalizedQ}|${options?.ownerId ?? 'all'}|${limit}|${offset}`;
-    const cache = (caches as any).default;
+    const cacheInput = `rag-v${cacheVersion}:${normalizedQ}|${options?.ownerId ?? 'all'}|${role ?? 'any'}|${limit}|${offset}`;
     const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cacheInput));
     const hashHex = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
-    const queryCacheKey = new Request(`https://rag-query-cache.internal/${hashHex}`);
+    const kvKey = `rag:${hashHex}`;
 
-    const queryCached = await cache.match(queryCacheKey);
-    if (queryCached) {
-      console.log(`RAG query cache HIT: "${normalizedQ}"`);
-      return await queryCached.json();
+    const cachedStr = await this.env.SORHAAANA_CACHE.get(kvKey);
+    if (cachedStr) {
+      console.log(`Cache HIT: "${normalizedQ}"`);
+      const hit = JSON.parse(cachedStr);
+      hit.cached = true;
+      return hit;
     }
 
     const intent = detectListingIntent(question);
     const parsed = extractParsedIntent(question);
-    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId);
+    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId, role);
 
     const properties = allProperties.slice(offset, offset + limit);
-    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut });
+    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut }, role);
 
     const result = {
       query: question,
@@ -945,14 +1082,18 @@ ${locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties 
       total_results: allProperties.length,
       page_size: limit,
       page_offset: offset,
-      listing_intent: intent || 'any'
+      listing_intent: intent || 'any',
+      role,
+      cached: false,
     };
 
-    // Store full result for 20 minutes
-    await cache.put(queryCacheKey, new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=1200' }
-    }));
-    console.log(`RAG query cache MISS — stored 20min: "${normalizedQ}"`);
+    // Only cache non-empty results — never persist a bug response
+    if (allProperties.length > 0) {
+      await this.env.SORHAAANA_CACHE.put(kvKey, JSON.stringify(result), { expirationTtl: 180 });
+      console.log(`Cache MISS — stored 3min: "${normalizedQ}" (${allProperties.length} results)`);
+    } else {
+      console.log(`Cache SKIP — 0 results not cached: "${normalizedQ}"`);
+    }
 
     return result;
   }
@@ -1027,6 +1168,22 @@ function parseBHK(layout: string | null): number | null {
   const bedMatch = layout.match(/(\d+)\s*(?:bedrooms?|bed)\b/i);
   if (bedMatch) return parseInt(bedMatch[1]);
   return null;
+}
+
+export function detectRole(query: string): 'buyer' | 'seller' {
+  const lower = query.toLowerCase();
+  const sellerSignals = [
+    'who wants', 'who want', 'who is looking', 'who are looking', 'who needs',
+    'find buyers', 'find tenants', 'find leads', 'find clients',
+    'buyers for', 'tenants for', 'leads for',
+    'looking to buy', 'looking to rent', 'looking to purchase',
+    'interested in buying', 'interested in renting',
+    'potential buyers', 'potential tenants', 'potential clients',
+    'people looking', 'someone looking', 'clients looking',
+    'show buyers', 'show tenants', 'show leads',
+    'list buyers', 'list tenants',
+  ];
+  return sellerSignals.some(s => lower.includes(s)) ? 'seller' : 'buyer';
 }
 
 export function detectListingIntent(query: string): 'sale' | 'rent' | null {

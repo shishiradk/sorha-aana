@@ -1,4 +1,4 @@
-import { RealEstateRAG, extractParsedIntent, detectListingIntent } from './rag-engine';
+import { RealEstateRAG } from './rag-engine';
 import { vectorizeProperties, getVectorizationStatus, cleanupStaleVectors } from './vectorize';
 import { html } from './ui';
 import { RealEstateAPI } from './api';
@@ -13,11 +13,25 @@ export interface Env {
   HYPERDRIVE: any; // Hyperdrive MySQL connection
   VECTORIZE: VectorizeIndex;
   AI: any;
+  SORHAAANA_CACHE: KVNamespace;
+  RATE_LIMITER: { limit(opts: { key: string }): Promise<{ success: boolean }> };
   ENVIRONMENT: string;
   MAX_RESULTS: string;
   PRICE_TOLERANCE: string;
   ADMIN_API_KEY?: string; // Optional API key for admin endpoints
   ALLOWED_ORIGINS?: string; // Comma-separated allowed origins (default: *)
+}
+
+/** Rate limit by API key — 20 req/min using Cloudflare's strongly-consistent RateLimiter binding */
+async function checkRateLimit(env: Env, apiKey: string): Promise<boolean> {
+  try {
+    const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(apiKey));
+    const hashHex = [...new Uint8Array(hashBuf)].slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+    const { success } = await env.RATE_LIMITER.limit({ key: hashHex });
+    return success;
+  } catch {
+    return true; // Fail open if rate limiter unavailable
+  }
 }
 
 /** Check if request has valid admin API key (header only) */
@@ -191,16 +205,28 @@ export default {
         if (!ownerId || isNaN(ownerId) || ownerId <= 0) {
           return Response.json({ error: 'Missing or invalid "owner_id". Provide a valid owner_id to search.' }, { status: 400, headers: corsHeaders });
         }
+        const authHeader = request.headers.get('Authorization') || '';
+        const apiKey = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
         if (!isAdminAuthorized(request, env)) {
           return Response.json({ error: 'Unauthorized. Provide API key via Authorization: Bearer <key> header.' }, { status: 401, headers: corsHeaders });
         }
 
+        const allowed = await checkRateLimit(env, apiKey);
+        if (!allowed) {
+          const resetIn = 60 - Math.floor((Date.now() % 60000) / 1000);
+          return Response.json(
+            { error: `Rate limit exceeded. Maximum 20 requests per minute. Try again in ${resetIn}s.` },
+            { status: 429, headers: { ...corsHeaders, 'Retry-After': String(resetIn), 'X-RateLimit-Limit': '20', 'X-RateLimit-Remaining': '0' } }
+          );
+        }
+
+        const role = body?.role === 'seller' ? 'seller' as const : body?.role === 'buyer' ? 'buyer' as const : undefined;
         const rag = new RealEstateRAG(env);
         const limit = Math.min(Math.max(parseInt(body.limit, 10) || 20, 1), 100);
         const offset = Math.max(parseInt(body.offset, 10) || 0, 0);
-        const result = await rag.query(query.trim(), { limit, offset, ownerId });
+        const result = await rag.query(query.trim(), { limit, offset, ownerId, role });
 
-        return Response.json(result, { headers: corsHeaders });
+        return Response.json(result, { headers: { ...corsHeaders, 'X-RateLimit-Limit': '20' } });
       }
 
       // Status check (general)
@@ -217,6 +243,81 @@ export default {
             error: error.message
           }, { status: 500, headers: corsHeaders });
         }
+      }
+
+      // Table row counts — admin only
+      if (path === '/debug-counts' && request.method === 'GET') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+        try {
+          const tables = ['sellers', 'rental_owners', 'buyers', 'tenants', 'agents'];
+          const counts: Record<string, number> = {};
+          for (const t of tables) {
+            try {
+              const { results } = await queryAll(env, `SELECT COUNT(*) as n FROM ${t}`);
+              counts[t] = (results[0] as any).n;
+            } catch { counts[t] = -1; }
+          }
+          return Response.json(counts, { headers: corsHeaders });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // Clear KV cache — deletes all "rag:*" (query cache) and "ai:*" (AI answer cache)
+      if (path === '/cache/clear' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+        try {
+          let deleted = 0;
+          for (const prefix of ['rag:', 'ai:']) {
+            let cursor: string | undefined;
+            do {
+              const page = await env.SORHAAANA_CACHE.list({ prefix, cursor });
+              await Promise.all(page.keys.map(k => env.SORHAAANA_CACHE.delete(k.name)));
+              deleted += page.keys.length;
+              cursor = page.list_complete ? undefined : (page as any).cursor;
+            } while (cursor);
+          }
+          return Response.json({ deleted, message: `Cleared ${deleted} cache entries.` }, { headers: corsHeaders });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // One-time migration: add vectorization tracking columns to buyers, tenants, agents
+      if (path === '/api/migrate/add-tracking-columns' && request.method === 'POST') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+
+        const tables = ['buyers', 'tenants', 'agents'];
+        const columns = [
+          { name: 'is_vectorized_complete', def: 'TINYINT(1) DEFAULT NULL' },
+          { name: 'last_vectorized_at',     def: 'DATETIME DEFAULT NULL' },
+          { name: 'vectorization_error_message', def: 'VARCHAR(255) DEFAULT NULL' },
+        ];
+
+        const results: Record<string, string[]> = {};
+        for (const table of tables) {
+          results[table] = [];
+          for (const col of columns) {
+            try {
+              await queryExecute(env,
+                `ALTER TABLE ${table} ADD COLUMN ${col.name} ${col.def}`
+              );
+              results[table].push(`${col.name}: added`);
+            } catch (e: any) {
+              // "Duplicate column name" means it already exists — that's fine
+              if (e.message?.includes('Duplicate column')) {
+                results[table].push(`${col.name}: already exists`);
+              } else {
+                results[table].push(`${col.name}: ERROR — ${e.message}`);
+              }
+            }
+          }
+        }
+
+        return Response.json({ results, message: 'Migration complete. Run /api/vectorize/full to vectorize all records.' }, { headers: corsHeaders });
       }
 
       // Vectorize admin endpoints
@@ -480,29 +581,6 @@ export default {
         return api.handleRequest(request);
       }
 
-      // Admin-only RAG query — no owner_id required, used for eval/debug
-      if (path === '/api/rag' && request.method === 'POST') {
-        const authErr = requireAdmin();
-        if (authErr) return authErr;
-        let body: any = {};
-        try { body = await request.json(); } catch {
-          return Response.json({ error: 'Invalid JSON body' }, { status: 400, headers: corsHeaders });
-        }
-        const query = body?.query;
-        if (!query || typeof query !== 'string' || query.trim().length === 0) {
-          return Response.json({ error: 'Missing "query"' }, { status: 400, headers: corsHeaders });
-        }
-        const ownerId = body?.owner_id ? parseInt(body.owner_id, 10) : null;
-        const limit = Math.min(Math.max(parseInt(body?.limit, 10) || 20, 1), 50);
-        const rag = new RealEstateRAG(env);
-        const result = await rag.query(query.trim(), { limit, ownerId });
-        return Response.json({
-          ...result,
-          parsed_filters: extractParsedIntent(query.trim()),
-          detected_intent: detectListingIntent(query.trim()),
-        }, { headers: corsHeaders });
-      }
-
       const endpoints = [
         'POST /api/vectorize - Start incremental vectorization',
         'POST /api/vectorize/full - Start full or incremental vectorization (body: {"mode": "incremental|full"})',
@@ -517,7 +595,6 @@ export default {
         'POST /api/query - Run SQL query',
         'GET /api/properties - List properties',
         'POST /search - Search (RAG)',
-        'POST /api/rag - Admin RAG query without owner_id (eval/debug)',
         'GET /test - Test endpoint'
       ];
 
