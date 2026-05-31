@@ -31,7 +31,7 @@ function parseJsonField(field: any): string[] {
 
 /** Normalize price: "3" + "CRORE" -> "NPR 3 Crore" */
 export function formatPrice(price: string | number | null, unit: string | null): string {
-  if (!price) return 'Price not specified';
+  if (!price || parseFloat(String(price)) === 0) return 'Price on request';
   const p = String(price).trim();
   const u = (unit || '').trim();
   if (!u) return `NPR ${p}`;

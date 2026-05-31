@@ -390,7 +390,7 @@ export class RealEstateRAG {
     if (role === 'seller') {
       const propTypeKw = extractPropertyType(query);
 
-      if (intent !== 'rent' && buyerIds.size < 5) {
+      if (intent !== 'rent' && buyerIds.size < 15) {
         try {
           const sql = propTypeKw
             ? `SELECT b.id FROM buyers b WHERE LOWER(b.property_type) LIKE LOWER(?) ORDER BY b.id DESC LIMIT 15`
@@ -407,7 +407,7 @@ export class RealEstateRAG {
         }
       }
 
-      if (intent !== 'sale' && tenantIds.size < 5) {
+      if (intent !== 'sale' && tenantIds.size < 15) {
         try {
           const sql = propTypeKw
             ? `SELECT t.id FROM tenants t WHERE LOWER(t.property_type) LIKE LOWER(?) ORDER BY t.id DESC LIMIT 15`
@@ -452,12 +452,13 @@ export class RealEstateRAG {
 
     const hasProximitySearch = searchCoords !== null;
 
-    // Limit to top 10 unique properties
+    // Fetch up to 30 per table — hard filters (property type, price) may eliminate many,
+    // so we need a wider pool before filtering. Final page trimming happens in query().
     let results: any[] = [];
 
     // Fetch sellers
     if (sellerIds.size > 0) {
-      const ids = [...sellerIds].slice(0, 10);
+      const ids = [...sellerIds].slice(0, 30);
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT s.*, d.name as district_name, m.name as municipality_name,
@@ -522,7 +523,7 @@ export class RealEstateRAG {
 
     // Fetch rentals
     if (rentalIds.size > 0) {
-      const ids = [...rentalIds].slice(0, 10);
+      const ids = [...rentalIds].slice(0, 30);
       const placeholders = ids.map(() => '?').join(',');
       const { results: rows } = await queryAll(this.env,
         `SELECT ro.*, d.name as district_name, m.name as municipality_name,
@@ -584,7 +585,7 @@ export class RealEstateRAG {
 
     // Fetch buyers
     if (buyerIds.size > 0) {
-      const ids = [...buyerIds].slice(0, 10);
+      const ids = [...buyerIds].slice(0, 30);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -618,7 +619,7 @@ export class RealEstateRAG {
 
     // Fetch tenants
     if (tenantIds.size > 0) {
-      const ids = [...tenantIds].slice(0, 10);
+      const ids = [...tenantIds].slice(0, 30);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -652,7 +653,7 @@ export class RealEstateRAG {
 
     // Fetch agents
     if (agentIds.size > 0) {
-      const ids = [...agentIds].slice(0, 10);
+      const ids = [...agentIds].slice(0, 30);
       const placeholders = ids.map(() => '?').join(',');
       try {
         const { results: rows } = await queryAll(this.env,
@@ -1173,13 +1174,28 @@ function parseBHK(layout: string | null): number | null {
 export function detectRole(query: string): 'buyer' | 'seller' {
   const lower = query.toLowerCase();
   const sellerSignals = [
+    // who wants / who is looking
     'who wants', 'who want', 'who is looking', 'who are looking', 'who needs',
+    'who would buy', 'who would rent', 'who can buy', 'who can rent',
+    // find / get a buyer or tenant
+    'find a buyer', 'find me a buyer', 'find a tenant', 'find me a tenant',
     'find buyers', 'find tenants', 'find leads', 'find clients',
-    'buyers for', 'tenants for', 'leads for',
+    'get me a buyer', 'get a buyer', 'get me a tenant', 'get a tenant',
+    // anyone / someone looking
+    'anyone looking', 'anyone interested', 'anyone to buy', 'anyone to rent',
+    'someone who wants', 'someone looking',
+    // buyer/tenant of/for something
+    'a buyer of', 'a buyer for', 'a tenant for', 'a tenant of',
+    'buyers for', 'buyers of', 'tenants for', 'tenants of',
+    'interested buyer', 'interested tenant',
+    'customer for', 'customers for',
+    'leads for', 'leads of', 'clients for',
+    // intent signals
     'looking to buy', 'looking to rent', 'looking to purchase',
     'interested in buying', 'interested in renting',
     'potential buyers', 'potential tenants', 'potential clients',
-    'people looking', 'someone looking', 'clients looking',
+    'people looking', 'clients looking',
+    // list/show
     'show buyers', 'show tenants', 'show leads',
     'list buyers', 'list tenants',
   ];

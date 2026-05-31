@@ -47,7 +47,7 @@ export const openApiSpec = {
         "/search": {
             "post": {
                 "summary": "AI Semantic Search",
-                "description": "Search for properties or leads using natural language. Role is auto-detected from the query — no need to set it manually. Rate limited to 20 requests/minute per API key.",
+                "description": "Search for properties or leads using natural language.\n\n**Smart auto-detection** — the system reads your query and decides the mode automatically:\n- `\"3 bedroom house in Pokhara\"` → finds matching properties (buyer mode)\n- `\"who wants to buy land\"` → finds potential buyers/tenants (seller/lead mode)\n\nNo need to specify a role. Just write naturally.\n\nRate limited to **20 requests/minute** per API key.",
                 "security": [{ "BearerAuth": [] }],
                 "requestBody": {
                     "required": true,
@@ -55,15 +55,16 @@ export const openApiSpec = {
                         "application/json": {
                             "schema": {
                                 "type": "object",
+                                "required": ["query", "owner_id"],
                                 "properties": {
                                     "query": {
                                         "type": "string",
-                                        "description": "Natural language search query. Role is auto-detected: 'house in pokhara' → buyer mode; 'who wants land' → seller mode.",
+                                        "description": "Natural language search query. The system auto-detects whether to search for properties or leads.",
                                         "example": "3 bedroom house in Pokhara under 5 crores"
                                     },
                                     "owner_id": {
                                         "type": "integer",
-                                        "description": "Owner ID to scope the search (required)",
+                                        "description": "Owner ID to scope the search",
                                         "example": 3
                                     },
                                     "limit": {
@@ -75,14 +76,12 @@ export const openApiSpec = {
                                         "type": "integer",
                                         "description": "Pagination offset (default 0)",
                                         "example": 0
-                                    },
-                                    "role": {
-                                        "type": "string",
-                                        "enum": ["buyer", "seller"],
-                                        "description": "Optional override. buyer = find properties; seller = find potential buyers/tenants. Auto-detected from query if omitted."
                                     }
                                 },
-                                "required": ["query", "owner_id"]
+                                "example": {
+                                    "query": "3 bedroom house in Pokhara under 5 crores",
+                                    "owner_id": 3
+                                }
                             }
                         }
                     }
