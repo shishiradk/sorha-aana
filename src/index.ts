@@ -199,6 +199,11 @@ export default {
         if (query.length > 500) {
           return Response.json({ error: 'Query too long. Maximum 500 characters.' }, { status: 400, headers: corsHeaders });
         }
+        const { detectPromptInjection } = await import('./rag-engine');
+        const injectionError = detectPromptInjection(query.trim());
+        if (injectionError) {
+          return Response.json({ error: injectionError }, { status: 400, headers: corsHeaders });
+        }
 
         // Owner-scoped search: owner_id is required
         const ownerId = body?.owner_id ? parseInt(body.owner_id, 10) : null;
@@ -264,13 +269,82 @@ export default {
         }
       }
 
-      // Clear KV cache — deletes all "rag:*" (query cache) and "ai:*" (AI answer cache)
+      // Precision@K / MRR evaluation endpoint
+      if (path === '/api/eval' && request.method === 'GET') {
+        const authErr = requireAdmin();
+        if (authErr) return authErr;
+
+        const K = parseInt(url.searchParams.get('k') || '5');
+        const ownerId = parseInt(url.searchParams.get('owner_id') || '3');
+
+        // Ground truth: query → expected property_type or listing_type
+        const testCases = [
+          { query: 'house for sale in pokhara',       expect_type: 'house', expect_intent: 'sale' },
+          { query: 'land for sale in pokhara',        expect_type: 'land',  expect_intent: 'sale' },
+          { query: 'flat for rent in lakeside',       expect_type: 'flat',  expect_intent: 'rent' },
+          { query: 'house for rent in pokhara',       expect_type: 'house', expect_intent: 'rent' },
+          { query: '3 bedroom house under 1 crore',   expect_type: 'house', expect_intent: null   },
+          { query: 'land under 50 lakh in pokhara',   expect_type: 'land',  expect_intent: null   },
+          { query: 'house near lakeside pokhara',     expect_type: 'house', expect_intent: null   },
+          { query: 'land for sale near pokhara',      expect_type: 'land',  expect_intent: 'sale' },
+          { query: 'shop for sale in pokhara',        expect_type: 'shop',  expect_intent: 'sale' },
+          { query: 'flat for sale',                   expect_type: 'flat',  expect_intent: 'sale' },
+        ];
+
+        const rag = new RealEstateRAG(env);
+        const results: any[] = [];
+        let totalPrecision = 0;
+        let totalMRR = 0;
+
+        for (const tc of testCases) {
+          const res = await rag.query(tc.query, { limit: K, ownerId });
+          const props = res.properties || [];
+
+          // Precision@K: fraction of top-K results with correct property type
+          const relevant = props.filter((p: any) =>
+            (p.property_type || '').toLowerCase() === tc.expect_type
+          );
+          const precisionAtK = props.length > 0 ? relevant.length / props.length : 0;
+
+          // MRR: reciprocal rank of first relevant result
+          const firstRelevantIdx = props.findIndex((p: any) =>
+            (p.property_type || '').toLowerCase() === tc.expect_type
+          );
+          const rr = firstRelevantIdx >= 0 ? 1 / (firstRelevantIdx + 1) : 0;
+
+          totalPrecision += precisionAtK;
+          totalMRR += rr;
+
+          results.push({
+            query: tc.query,
+            expected_type: tc.expect_type,
+            total_results: res.total_results,
+            top_k_results: props.length,
+            relevant_in_top_k: relevant.length,
+            precision_at_k: Math.round(precisionAtK * 100) / 100,
+            reciprocal_rank: Math.round(rr * 100) / 100,
+          });
+        }
+
+        const meanPrecision = Math.round((totalPrecision / testCases.length) * 100) / 100;
+        const MRR = Math.round((totalMRR / testCases.length) * 100) / 100;
+
+        return Response.json({
+          k: K,
+          mean_precision_at_k: meanPrecision,
+          mrr: MRR,
+          test_cases: results,
+          summary: `Mean Precision@${K}: ${(meanPrecision * 100).toFixed(0)}% | MRR: ${MRR.toFixed(2)}`
+        }, { headers: corsHeaders });
+      }
+
+      // Clear KV cache — deletes all "rag:*" (query cache), "ai:*" (AI answer cache), "role:*" (role decisions)
       if (path === '/cache/clear' && request.method === 'POST') {
         const authErr = requireAdmin();
         if (authErr) return authErr;
         try {
           let deleted = 0;
-          for (const prefix of ['rag:', 'ai:']) {
+          for (const prefix of ['rag:', 'ai:', 'role:']) {
             let cursor: string | undefined;
             do {
               const page = await env.SORHAAANA_CACHE.list({ prefix, cursor });

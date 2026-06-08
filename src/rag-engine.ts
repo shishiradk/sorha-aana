@@ -12,6 +12,12 @@ export interface Env {
   AI: any;
   SORHAAANA_CACHE: KVNamespace;
   CACHE_VERSION?: string;
+  // Scoring weights (0-1, configurable via wrangler.json vars)
+  W_SIMILARITY?: string;   // vector similarity weight
+  W_PROXIMITY?: string;    // location proximity weight
+  W_TYPE?: string;         // property type match weight
+  W_PRICE?: string;        // price fit weight
+  W_RERANK?: string;       // keyword rerank boost weight
 }
 
 export class RealEstateRAG {
@@ -189,12 +195,15 @@ export class RealEstateRAG {
 
     const wantsAgent = /\bagent\b/i.test(query);
 
-    // For seller role, rewrite the embedding query to match buyer/tenant vector language.
-    // Buyer vectors contain "looking to buy, property buyer, purchase" — a seller-phrased
-    // query like "who wants land?" won't match those without this nudge.
-    const embeddingQuery = role === 'seller'
-      ? `buyer tenant looking to buy rent ${query}`
+    // Translate Nepali script queries to English before embedding
+    // bge-large-en-v1.5 is English-dominant; Nepali Devanagari gets poor embeddings
+    let embeddingQuery = containsNepaliScript(query)
+      ? await translateToEnglish(query, this.env.AI)
       : query;
+
+    // For seller role, prepend buyer/tenant context so vector search finds demand-side records
+    if (role === 'seller') embeddingQuery = `buyer tenant looking to buy rent ${embeddingQuery}`;
+
     const queryEmbedding = await this.generateQueryEmbedding(embeddingQuery);
 
     // Use higher topK for seller role — buyers/tenants are ~15% of vectors, need wider net
@@ -810,36 +819,43 @@ export class RealEstateRAG {
       }
     }
 
+    // Load configurable weights from env (fall back to defaults)
+    const wSim   = parseFloat(this.env.W_SIMILARITY || '0.35');
+    const wProx  = parseFloat(this.env.W_PROXIMITY  || '0.25');
+    const wType  = parseFloat(this.env.W_TYPE        || '0.15');
+    const wPrice = parseFloat(this.env.W_PRICE       || '0.15');
+    const wRnk   = parseFloat(this.env.W_RERANK      || '0.10');
+
+    // Reranking: keyword overlap between query terms and result fields
+    const queryTerms = query.toLowerCase().split(/\s+/);
+    const rerank = (p: any) => keywordRerankScore(p, queryTerms);
+
     // Sort results based on what filters are active
     const hasPrice = !!(parsed?.minNPR || parsed?.maxNPR);
     const hasFeatureFilters = !!(parsed?.minArea || parsed?.maxArea || parsed?.storeys || parsed?.facing || parsed?.furnished !== null && parsed?.furnished !== undefined || parsed?.roadAccess || parsed?.category);
 
     if (hasProximitySearch && (hasPrice || hasFeatureFilters)) {
-      // Location + filters: filters are top priority within location
       results.sort((a, b) => {
-        const aScore = 0.1 * a.similarity + 0.2 * proxScore(a) + 0.1 * typeScore(a) + 0.25 * priceScore(a) + 0.1 * bedroomScore(a) + 0.25 * featureScore(a);
-        const bScore = 0.1 * b.similarity + 0.2 * proxScore(b) + 0.1 * typeScore(b) + 0.25 * priceScore(b) + 0.1 * bedroomScore(b) + 0.25 * featureScore(b);
+        const aScore = wSim*0.3*a.similarity + wProx*0.8*proxScore(a) + wType*0.7*typeScore(a) + wPrice*priceScore(a) + 0.1*bedroomScore(a) + wPrice*featureScore(a) + wRnk*rerank(a);
+        const bScore = wSim*0.3*b.similarity + wProx*0.8*proxScore(b) + wType*0.7*typeScore(b) + wPrice*priceScore(b) + 0.1*bedroomScore(b) + wPrice*featureScore(b) + wRnk*rerank(b);
         return bScore - aScore;
       });
     } else if (hasProximitySearch) {
-      // Location only: proximity + similarity
       results.sort((a, b) => {
-        const aScore = 0.2 * a.similarity + 0.3 * proxScore(a) + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a) + 0.1 * featureScore(a);
-        const bScore = 0.2 * b.similarity + 0.3 * proxScore(b) + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b) + 0.1 * featureScore(b);
+        const aScore = wSim*a.similarity + wProx*proxScore(a) + wType*typeScore(a) + wPrice*0.5*priceScore(a) + 0.05*bedroomScore(a) + wRnk*rerank(a);
+        const bScore = wSim*b.similarity + wProx*proxScore(b) + wType*typeScore(b) + wPrice*0.5*priceScore(b) + 0.05*bedroomScore(b) + wRnk*rerank(b);
         return bScore - aScore;
       });
     } else if (hasPrice || hasFeatureFilters) {
-      // Filters only: filters are top priority
       results.sort((a, b) => {
-        const aScore = 0.15 * a.similarity + 0.1 * typeScore(a) + 0.3 * priceScore(a) + 0.15 * bedroomScore(a) + 0.3 * featureScore(a);
-        const bScore = 0.15 * b.similarity + 0.1 * typeScore(b) + 0.3 * priceScore(b) + 0.15 * bedroomScore(b) + 0.3 * featureScore(b);
+        const aScore = wSim*a.similarity + wType*typeScore(a) + wPrice*2*priceScore(a) + 0.1*bedroomScore(a) + wPrice*featureScore(a) + wRnk*rerank(a);
+        const bScore = wSim*b.similarity + wType*typeScore(b) + wPrice*2*priceScore(b) + 0.1*bedroomScore(b) + wPrice*featureScore(b) + wRnk*rerank(b);
         return bScore - aScore;
       });
     } else {
-      // Default: sort by similarity + type + price/bedroom fit
       results.sort((a, b) => {
-        const aScore = 0.5 * a.similarity + 0.2 * typeScore(a) + 0.1 * priceScore(a) + 0.1 * bedroomScore(a) + 0.1 * featureScore(a);
-        const bScore = 0.5 * b.similarity + 0.2 * typeScore(b) + 0.1 * priceScore(b) + 0.1 * bedroomScore(b) + 0.1 * featureScore(b);
+        const aScore = wSim*a.similarity + wType*typeScore(a) + wPrice*priceScore(a) + 0.05*bedroomScore(a) + wRnk*rerank(a);
+        const bScore = wSim*b.similarity + wType*typeScore(b) + wPrice*priceScore(b) + 0.05*bedroomScore(b) + wRnk*rerank(b);
         return bScore - aScore;
       });
     }
@@ -853,6 +869,83 @@ export class RealEstateRAG {
         const pType = (p.property_type || '').toLowerCase();
         return pType === queryPropType;
       });
+
+      // Type guarantee fallback: if the hard filter wiped everything (rare type not
+      // in top vector/proximity results), run a direct SQL to guarantee we find it.
+      if (results.length === 0 && role !== 'seller') {
+        try {
+          const tableMap: Record<string, { table: string; alias: string; addrCol: string }> = {
+            sale: { table: 'sellers',       alias: 's',  addrCol: 'property_address' },
+            rent: { table: 'rental_owners', alias: 'ro', addrCol: 'address'          },
+          };
+          const tables = intent === 'rent'
+            ? [tableMap.rent]
+            : intent === 'sale'
+            ? [tableMap.sale]
+            : [tableMap.sale, tableMap.rent];
+
+          for (const { table, alias, addrCol } of tables) {
+            const locationClause = locationPhrase
+              ? ` AND (LOWER(${alias}.${addrCol}) LIKE LOWER(?) OR LOWER(${alias}.city) LIKE LOWER(?))`
+              : '';
+            const locationParams = locationPhrase ? [`%${locationPhrase}%`, `%${locationPhrase}%`] : [];
+            const ownerClause = ownerId ? ` AND ${alias}.owner_id = ${ownerId}` : '';
+
+            // Fetch full row data directly — don't re-use sellerIds (already full at 30)
+            const joinMap: Record<string, string> = {
+              sellers: `SELECT s.*, d.name as district_name, m.name as municipality_name,
+                               p.name as province_name, c.name as customer_name,
+                               c.primary_phone_num as customer_phone
+                        FROM sellers s
+                        LEFT JOIN districts d ON s.district_id = d.id
+                        LEFT JOIN municipalities m ON s.municipal_id = m.id
+                        LEFT JOIN provinces p ON s.province_id = p.id
+                        LEFT JOIN customers c ON s.customer_id = c.id
+                        WHERE UPPER(s.property_type) = UPPER(?) AND s.status = 'ACTIVE'${ownerClause}${locationClause} ORDER BY s.id DESC LIMIT 10`,
+              rental_owners: `SELECT ro.*, d.name as district_name, m.name as municipality_name,
+                                     p.name as province_name, c.name as customer_name,
+                                     c.primary_phone_num as customer_phone
+                              FROM rental_owners ro
+                              LEFT JOIN districts d ON ro.district_id = d.id
+                              LEFT JOIN municipalities m ON ro.municipal_id = m.id
+                              LEFT JOIN provinces p ON ro.province_id = p.id
+                              LEFT JOIN customers c ON ro.customer_id = c.id
+                              WHERE UPPER(ro.property_type) = UPPER(?) AND ro.status = 'ACTIVE'${ownerClause.replace(/s\./g, 'ro.')}${locationClause} ORDER BY ro.id DESC LIMIT 10`,
+            };
+
+            const { results: fallbackRows } = await queryAll(this.env, joinMap[table], [queryPropType, ...locationParams]);
+            if ((fallbackRows as any[]).length > 0) {
+              console.log(`Type guarantee fallback: ${(fallbackRows as any[]).length} ${table} for "${queryPropType}"`);
+            }
+
+            for (const row of fallbackRows as any[]) {
+              if (results.some((r: any) => r.id === row.id && r.source_table === table)) continue;
+              const pType = formatEnum(row.property_type);
+              const listingType = table === 'sellers' ? 'Sale' : 'Rent';
+              const addrField = table === 'sellers' ? row.property_address : row.address;
+              const priceField = table === 'sellers'
+                ? formatPrice(row.property_price, row.property_price_unit)
+                : (row.rent_amount ? `NPR ${Number(row.rent_amount).toLocaleString()}/month` : 'Rent negotiable');
+              const priceNpr = table === 'sellers'
+                ? priceToNPR(row.property_price, row.property_price_unit)
+                : (row.rent_amount || 0);
+              results.push({
+                id: row.id, source_table: table, listing_type: listingType,
+                title: `${pType} for ${listingType} in ${addrField || row.city || 'Nepal'}`,
+                property_type: pType,
+                location: [addrField, row.city, row.municipality_name, row.district_name].filter(Boolean).join(', '),
+                district: row.district_name, city: row.city,
+                price: priceField, price_npr: priceNpr,
+                area: null, bedrooms: null, amenities: [],
+                name: row.customer_name || null, phone: row.customer_phone || null,
+                similarity: 0.6, distance_km: null,
+              });
+            }
+          }
+        } catch (err: any) {
+          console.warn('Type guarantee fallback failed:', err.message);
+        }
+      }
     }
 
     // Hard-filter by listing intent (sale vs rent) — skip for seller role:
@@ -980,7 +1073,7 @@ export class RealEstateRAG {
 
     const prompt = `${systemContext}
 
-User query: "${question}"
+<user_query>${question.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</user_query>
 ${listingTypeNote}
 ${parsedNote}
 
@@ -1044,18 +1137,68 @@ ${!isSeller ? `- If distance data is available, mention how far each property is
     }
   }
 
+  private async resolveRole(question: string, queryHash: string, override?: 'buyer' | 'seller'): Promise<'buyer' | 'seller'> {
+    if (override) return override;
+
+    // Fast path: keyword signals are unambiguous
+    const kwRole = detectRole(question);
+    if (kwRole === 'seller') return 'seller';
+
+    // Check KV for a cached AI decision (24h TTL, versioned so prompt changes invalidate)
+    const roleKey = `role:v2:${queryHash}`;
+    const cachedRole = await this.env.SORHAAANA_CACHE.get(roleKey);
+    if (cachedRole === 'seller' || cachedRole === 'buyer') return cachedRole;
+
+    // LLaMA reasoning for ambiguous queries
+    try {
+      const response = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages: [
+          {
+            role: 'system',
+            content: `You classify Nepal real estate queries into exactly one of two modes.
+
+"seller" = the person already has a property and wants to find buyers, tenants, clients, or leads
+"buyer" = the person wants to find a property to buy or rent
+
+Examples of seller: "I need a buyer", "find me a tenant for my flat", "who wants land in Pokhara", "looking for someone to buy my house", "need clients", "ghar kinna khojdai xa ko xa" (someone who wants to buy)
+Examples of buyer: "3 bedroom house in Pokhara", "flat for rent under 15000", "land near lake", "show me houses"
+
+Reply with ONLY the single word "seller" or "buyer". No explanation.`
+          },
+          { role: 'user', content: question }
+        ],
+        max_tokens: 5,
+      });
+      const aiRole = response?.response?.trim().toLowerCase() === 'seller' ? 'seller' : 'buyer';
+      await this.env.SORHAAANA_CACHE.put(roleKey, aiRole, { expirationTtl: 86400 });
+      console.log(`AI role detect: "${question}" → ${aiRole}`);
+      return aiRole;
+    } catch {
+      return 'buyer';
+    }
+  }
+
   async query(question: string, options?: { limit?: number; offset?: number; ownerId?: number | null; role?: 'buyer' | 'seller' }): Promise<any> {
+    const injectionCheck = detectPromptInjection(question);
+    if (injectionCheck) return { error: injectionCheck, properties: [], total_results: 0, answer: injectionCheck };
+
     const limit = Math.min(options?.limit || 20, 50);
     const offset = options?.offset || 0;
-    const role = options?.role ?? detectRole(question);
+
+    // Normalize and hash query early — shared between role cache key and query cache key
+    const cacheVersion = this.env.CACHE_VERSION || '1';
+    const normalizedQ = question.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[?!.,]+$/, '');
+    const queryHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedQ));
+    const queryHash = [...new Uint8Array(queryHashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // Resolve role: keyword fast-path → AI reasoning fallback (result cached in KV)
+    const role = await this.resolveRole(question, queryHash, options?.role);
 
     // Smart query cache (KV):
     // - Key: rag:<version>:<hash> — includes CACHE_VERSION for deploy-time invalidation
     // - TTL: 3 minutes (short enough to stay fresh; long enough to help repeated queries)
     // - Only stored when results.length > 0 (never caches empty/error responses)
     // - Keys prefixed with "rag:" so /cache/clear can list+delete all entries
-    const cacheVersion = this.env.CACHE_VERSION || '1';
-    const normalizedQ = question.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[?!.,]+$/, '');
     const cacheInput = `rag-v${cacheVersion}:${normalizedQ}|${options?.ownerId ?? 'all'}|${role ?? 'any'}|${limit}|${offset}`;
     const hashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(cacheInput));
     const hashHex = [...new Uint8Array(hashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -1171,6 +1314,65 @@ function parseBHK(layout: string | null): number | null {
   return null;
 }
 
+/** Keyword reranking — boosts results where query terms appear in title/location/type */
+export function keywordRerankScore(p: any, queryTerms: string[]): number {
+  const text = [p.title, p.location, p.property_type, p.district, p.city, p.remarks]
+    .filter(Boolean).join(' ').toLowerCase();
+  const meaningful = queryTerms.filter(t => t.length > 2);
+  if (meaningful.length === 0) return 0;
+  const hits = meaningful.filter(t => text.includes(t)).length;
+  return hits / meaningful.length;
+}
+
+/** Detect Devanagari script (Nepali) in a query */
+function containsNepaliScript(text: string): boolean {
+  return /[ऀ-ॿ]/.test(text);
+}
+
+/** Translate query to English using AI if it contains Nepali script */
+async function translateToEnglish(query: string, ai: any): Promise<string> {
+  try {
+    const response = await ai.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [{
+        role: 'user',
+        content: `Translate this Nepali real estate query to English. Reply with ONLY the translated text, nothing else: "${query}"`
+      }],
+      max_tokens: 100
+    });
+    const translated = response?.response?.trim();
+    return translated && translated.length > 0 ? translated : query;
+  } catch {
+    return query;
+  }
+}
+
+export function detectPromptInjection(query: string): string | null {
+  const lower = query.toLowerCase();
+  const patterns = [
+    /ignore\s+(previous|prior|above|all)\s+(instructions?|prompts?|context|rules?)/i,
+    /forget\s+(previous|prior|above|all|everything|what)/i,
+    /you\s+are\s+now\s+(a\s+)?(different|new|another|an?\s+)/i,
+    /act\s+as\s+(a\s+)?(different|new|another|an?\s+)/i,
+    /new\s+(role|persona|identity|instructions?|task|objective)/i,
+    /\[system\]/i,
+    /\bsystem\s*:/i,
+    /\bprompt\s*:/i,
+    /reveal\s+(your\s+)?(system\s+)?(prompt|instructions?|rules?|context)/i,
+    /show\s+(me\s+)?(your\s+)?(system\s+)?(prompt|instructions?|rules?)/i,
+    /print\s+(your\s+)?(system\s+)?(prompt|instructions?)/i,
+    /bypass\s+(safety|filter|restriction|rule)/i,
+    /jailbreak/i,
+    /\bdann\b.*\bdoing\b/i,   // DAN jailbreak variant
+    /<\|.*\|>/,               // token injection attempt
+    /###\s*(instruction|system|human|assistant)/i,
+  ];
+
+  if (patterns.some(p => p.test(query))) {
+    return 'Invalid query. Please search for properties using natural language, e.g. "3 bedroom house in Pokhara".';
+  }
+  return null;
+}
+
 export function detectRole(query: string): 'buyer' | 'seller' {
   const lower = query.toLowerCase();
   const sellerSignals = [
@@ -1195,6 +1397,18 @@ export function detectRole(query: string): 'buyer' | 'seller' {
     'interested in buying', 'interested in renting',
     'potential buyers', 'potential tenants', 'potential clients',
     'people looking', 'clients looking',
+    // need/want a buyer or tenant
+    'need a buyer', 'need buyer', 'need buyers',
+    'need a tenant', 'need tenant', 'need tenants',
+    'need a client', 'need client', 'need clients', 'need leads',
+    'want a buyer', 'want buyer', 'want buyers',
+    'want a tenant', 'want tenant', 'want tenants',
+    // looking/searching for a buyer or tenant
+    'looking for a buyer', 'looking for buyer', 'looking for buyers',
+    'looking for a tenant', 'looking for tenant', 'looking for tenants',
+    'looking for leads', 'looking for clients',
+    'searching for a buyer', 'searching for buyer',
+    'searching for a tenant', 'searching for tenant',
     // list/show
     'show buyers', 'show tenants', 'show leads',
     'list buyers', 'list tenants',

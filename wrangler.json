@@ -26,7 +26,12 @@
 		"ENVIRONMENT": "production",
 		"MAX_RESULTS": "10",
 		"PRICE_TOLERANCE": "0.1",
-		"CACHE_VERSION": "1"
+		"CACHE_VERSION": "1",
+		"W_SIMILARITY": "0.35",
+		"W_PROXIMITY": "0.25",
+		"W_TYPE": "0.15",
+		"W_PRICE": "0.15",
+		"W_RERANK": "0.10"
 	},
 	"observability": {
 		"enabled": true
