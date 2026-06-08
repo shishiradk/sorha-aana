@@ -90,7 +90,7 @@ export class RealEstateRAG {
     }
   }
 
-  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null, role?: 'buyer' | 'seller'): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }> {
+  async searchProperties(query: string, intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, ownerId?: number | null, role?: 'buyer' | 'seller'): Promise<{ results: any[]; locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean; locationMatchLevel?: 'exact' | 'city' | 'district' | 'general' }> {
     console.log(`Searching: "${query}" [intent: ${intent || 'any'}] [owner: ${ownerId || 'all'}] [role: ${role || 'any'}]`);
 
     // Owner filter helper — appends AND owner_id = N when scoped
@@ -393,44 +393,114 @@ export class RealEstateRAG {
       }
     }
 
-    // Step 2 (seller role): SQL-primary fallback for buyers/tenants.
-    // Buyers/tenants may not be in Vectorize (no tracking column → cron re-vectorizes all, may time out).
-    // Direct SQL search by property_type + general fallback ensures seller role always returns results.
+    // Step 2 (seller role): Tiered location fallback for buyers/tenants.
+    // Step 1 already ran exact text search (seeking_address LIKE '%{phrase}%').
+    // Here we expand outward only if Step 1 found < 5 results:
+    //   Tier 2 — nearest city (find city from sellers geocoded coords)
+    //   Tier 3 — district name (kaski)
+    //   Tier 4 — general (no location filter)
+    let locationMatchLevel: 'exact' | 'city' | 'district' | 'general' = 'general';
+
     if (role === 'seller') {
       const propTypeKw = extractPropertyType(query);
+      const typeClause = propTypeKw ? ` AND LOWER(b.property_type) LIKE LOWER(?)` : '';
+      const typeClauseT = propTypeKw ? ` AND LOWER(t.property_type) LIKE LOWER(?)` : '';
+      const typeParam = propTypeKw ? [`%${propTypeKw}%`] : [];
 
-      if (intent !== 'rent' && buyerIds.size < 15) {
+      const exactCount = buyerIds.size + tenantIds.size;
+
+      if (exactCount >= 5) {
+        // Step 1 found enough results in the exact location
+        locationMatchLevel = 'exact';
+      } else if (locationPhrase) {
+        // Not enough exact matches — try nearest city then district
+        if (exactCount > 0) locationMatchLevel = 'exact'; // some exact, will supplement
+
+        // Geocode the location phrase to find nearest sellers city
+        let nearestCity: string | null = null;
+        try {
+          const geoCoords = await geocodeLocation(locationPhrase);
+          if (geoCoords) {
+            const distExprLatLng = `SQRT(POW(latitude - ?, 2) + POW(longitude - ?, 2))`;
+            const { results: cityRows } = await queryAll(this.env,
+              `SELECT city FROM sellers
+               WHERE latitude IS NOT NULL AND city IS NOT NULL AND city != ''
+               ORDER BY ${distExprLatLng} ASC LIMIT 1`,
+              [geoCoords.lat, geoCoords.lng]
+            );
+            nearestCity = (cityRows as any[])[0]?.city?.toLowerCase() ?? null;
+            if (nearestCity === locationPhrase.toLowerCase()) nearestCity = null;
+            console.log(`Nearest city to "${locationPhrase}": ${nearestCity}`);
+          }
+        } catch {}
+
+        const fallbackTiers: Array<{ term: string; level: 'city' | 'district' }> = [];
+        if (nearestCity) fallbackTiers.push({ term: nearestCity, level: 'city' });
+        fallbackTiers.push({ term: 'kaski', level: 'district' });
+
+        for (const tier of fallbackTiers) {
+          const locParam = `%${tier.term}%`;
+          let tierFound = false;
+
+          if (intent !== 'rent' && buyerIds.size < 15) {
+            try {
+              const { results: bRows } = await queryAll(this.env,
+                `SELECT b.id FROM buyers b WHERE LOWER(b.seeking_address) LIKE LOWER(?)${typeClause} ORDER BY b.id DESC LIMIT 20`,
+                [locParam, ...typeParam]
+              );
+              for (const r of bRows as any[]) {
+                buyerIds.add(r.id);
+                if (!scoreMap.has(`buyers_${r.id}`)) scoreMap.set(`buyers_${r.id}`, tier.level === 'city' ? 0.65 : 0.45);
+              }
+              if ((bRows as any[]).length > 0) tierFound = true;
+              console.log(`Seller tier[${tier.level}] buyers: ${(bRows as any[]).length} for "${tier.term}"`);
+            } catch (err: any) { console.warn('Tier buyer search failed:', err.message); }
+          }
+
+          if (intent !== 'sale' && tenantIds.size < 15) {
+            try {
+              const { results: tRows } = await queryAll(this.env,
+                `SELECT t.id FROM tenants t WHERE LOWER(t.seeking_address) LIKE LOWER(?)${typeClauseT} ORDER BY t.id DESC LIMIT 20`,
+                [locParam, ...typeParam]
+              );
+              for (const r of tRows as any[]) {
+                tenantIds.add(r.id);
+                if (!scoreMap.has(`tenants_${r.id}`)) scoreMap.set(`tenants_${r.id}`, tier.level === 'city' ? 0.65 : 0.45);
+              }
+              if ((tRows as any[]).length > 0) tierFound = true;
+            } catch {}
+          }
+
+          if (tierFound && locationMatchLevel === 'general') locationMatchLevel = tier.level;
+          // If city tier found enough, stop before district
+          if (tier.level === 'city' && buyerIds.size + tenantIds.size >= 10) break;
+        }
+      }
+
+      // General fallback — no location filter
+      if (buyerIds.size < 8 && intent !== 'rent') {
         try {
           const sql = propTypeKw
             ? `SELECT b.id FROM buyers b WHERE LOWER(b.property_type) LIKE LOWER(?) ORDER BY b.id DESC LIMIT 15`
             : `SELECT b.id FROM buyers b ORDER BY b.id DESC LIMIT 15`;
-          const params = propTypeKw ? [`%${propTypeKw}%`] : [];
-          const { results: bRows } = await queryAll(this.env, sql, params);
+          const { results: bRows } = await queryAll(this.env, sql, propTypeKw ? [`%${propTypeKw}%`] : []);
           for (const r of bRows as any[]) {
             buyerIds.add(r.id);
-            if (!scoreMap.has(`buyers_${r.id}`)) scoreMap.set(`buyers_${r.id}`, 0.5);
+            if (!scoreMap.has(`buyers_${r.id}`)) scoreMap.set(`buyers_${r.id}`, 0.3);
           }
-          console.log(`Seller SQL fallback: ${(bRows as any[]).length} buyers (propType: ${propTypeKw || 'any'})`);
-        } catch (err: any) {
-          console.warn('Seller buyer SQL fallback failed:', err.message);
-        }
+        } catch {}
       }
-
-      if (intent !== 'sale' && tenantIds.size < 15) {
+      if (tenantIds.size < 8 && intent !== 'sale') {
         try {
           const sql = propTypeKw
             ? `SELECT t.id FROM tenants t WHERE LOWER(t.property_type) LIKE LOWER(?) ORDER BY t.id DESC LIMIT 15`
             : `SELECT t.id FROM tenants t ORDER BY t.id DESC LIMIT 15`;
-          const params = propTypeKw ? [`%${propTypeKw}%`] : [];
-          const { results: tRows } = await queryAll(this.env, sql, params);
+          const { results: tRows } = await queryAll(this.env, sql, propTypeKw ? [`%${propTypeKw}%`] : []);
           for (const r of tRows as any[]) {
             tenantIds.add(r.id);
-            if (!scoreMap.has(`tenants_${r.id}`)) scoreMap.set(`tenants_${r.id}`, 0.5);
+            if (!scoreMap.has(`tenants_${r.id}`)) scoreMap.set(`tenants_${r.id}`, 0.3);
           }
-          console.log(`Seller SQL fallback: ${(tRows as any[]).length} tenants (propType: ${propTypeKw || 'any'})`);
-        } catch (err: any) {
-          console.warn('Seller tenant SQL fallback failed:', err.message);
-        }
+        } catch {}
       }
     }
 
@@ -978,10 +1048,10 @@ export class RealEstateRAG {
 
     const filteredOut = resultsBeforeFilter > 0 && results.length === 0;
 
-    return { results, locationPhrase, geocodeFailed, outsideCoverage, filteredOut };
+    return { results, locationPhrase, geocodeFailed, outsideCoverage, filteredOut, locationMatchLevel };
   }
 
-  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }, role?: 'buyer' | 'seller', totalCount?: number): Promise<string> {
+  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean; locationMatchLevel?: 'exact' | 'city' | 'district' | 'general' }, role?: 'buyer' | 'seller', totalCount?: number): Promise<string> {
     if (properties.length === 0) {
       if (role === 'seller') {
         const locDesc = locationCtx?.locationPhrase ? ` in ${locationCtx.locationPhrase}` : '';
@@ -1074,11 +1144,22 @@ export class RealEstateRAG {
       ? `You are a real estate AI assistant helping a property owner find potential buyers or tenants interested in their property.`
       : `You are a real estate AI assistant helping users find properties based on their needs.`;
 
+    const matchLevel = locationCtx?.locationMatchLevel ?? 'general';
+    const locationNote = isSeller && locationCtx?.locationPhrase
+      ? matchLevel === 'exact'
+        ? `\nUser searched for leads in: "${locationCtx.locationPhrase}". The results below are specifically from that location.`
+        : matchLevel === 'city'
+          ? `\nUser searched for leads in: "${locationCtx.locationPhrase}". No buyers/tenants were found there specifically — showing results from the broader city area instead. Mention this clearly at the start of your response.`
+          : matchLevel === 'district'
+            ? `\nUser searched for leads in: "${locationCtx.locationPhrase}". No buyers/tenants were found in that specific location or nearby city — showing district-level results from Kaski. Mention this clearly at the start of your response.`
+            : `\nUser searched for leads in: "${locationCtx.locationPhrase}". No location-specific results were found — showing general leads. Mention this clearly at the start of your response.`
+      : '';
+
     const prompt = `${systemContext}
 
 <user_query>${question.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</user_query>
 ${listingTypeNote}
-${parsedNote}
+${parsedNote}${locationNote}
 Total matching results: ${actualTotal}. Showing top ${properties.slice(0, contextLimit).length} below.
 
 ${isSeller ? 'Potential buyers/tenants from the database:' : 'Matching properties from the database:'}
@@ -1089,8 +1170,9 @@ INSTRUCTIONS:
 - Reply in English only.
 - CRITICAL: ALL properties listed above have already been filtered and validated by the system. Do NOT re-check or re-apply price, bedroom, or any other filters. Do NOT say a property is over budget — if it appears above, it is a valid result.
 ${isSeller ? `- These are BUYERS or TENANTS looking for a property. Summarise each person's requirements: location preference, budget, property type, and contact if available.
+- If the user searched a specific location but results show a broader area, clearly state: "No buyers/tenants found specifically in [searched location]. Here are leads from nearby areas:"
 - Group by type if needed (e.g., "Buyers:", "Tenants:").
-- At the end say "Found ${actualTotal} potential leads."` :
+- At the end write exactly: "Found ${actualTotal} potential leads."` :
   locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties shown above — give a brief summary of each (type, price, area). Do not skip any.
 - Group by property type if there are many (e.g., "Houses:", "Land:", "Rentals:").
 - At the end say exactly: "Found ${actualTotal} properties."` : hasFilters ? `- The user searched with FILTERS. List each property with its price, area, bedrooms, and key details.
@@ -1129,10 +1211,17 @@ ${!isSeller ? `- If distance data is available, mention how far each property is
         return 'I found matching properties shown below, but the AI analysis is temporarily unavailable.';
       }
 
-      await this.env.SORHAAANA_CACHE.put(kvKey, response.response, { expirationTtl: 3600 });
+      // Post-process: guarantee the total count is correct regardless of what the LLM wrote
+      let answer = response.response;
+      answer = answer
+        .replace(/Found \d+ potential leads\.?/gi, `Found ${actualTotal} potential leads.`)
+        .replace(/Found \d+ properties matching[^.]*\.?/gi, `Found ${actualTotal} properties matching your criteria.`)
+        .replace(/Found \d+ properties\.?/gi, `Found ${actualTotal} properties.`);
+
+      await this.env.SORHAAANA_CACHE.put(kvKey, answer, { expirationTtl: 3600 });
       console.log('AI cache MISS — stored for 1h');
 
-      return response.response;
+      return answer;
     } catch (e: any) {
       const errMsg = e?.message || String(e);
       console.error('AI generation failed:', errMsg, 'Prompt length:', prompt.length);
@@ -1178,11 +1267,16 @@ Fields:
 - propertyType: "house"/"land"/"flat"/"apartment"/"shop"/"commercial"/"hotel" or null
 
 Examples:
-"buyer in Pokhara under a budget of 1.5 crores" → {"role":"buyer","maxBudget":15000000,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":null}
-"find me a tenant for 2bhk flat" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":2,"listingIntent":"rent","propertyType":"flat"}
 "3 bedroom house under 50 lakhs" → {"role":"buyer","maxBudget":5000000,"minBudget":null,"bedrooms":3,"listingIntent":"sale","propertyType":"house"}
 "land between 1 crore and 2 crore" → {"role":"buyer","maxBudget":20000000,"minBudget":10000000,"bedrooms":null,"listingIntent":"sale","propertyType":"land"}
-"I need buyer for my land" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":"land"}`
+"flat for rent under 15000" → {"role":"buyer","maxBudget":15000,"minBudget":null,"bedrooms":null,"listingIntent":"rent","propertyType":"flat"}
+"find me a tenant for 2bhk flat" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":2,"listingIntent":"rent","propertyType":"flat"}
+"I need buyer for my land" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":"land"}
+"buyer in Pokhara under a budget of 1.5 crores" → {"role":"seller","maxBudget":15000000,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":null}
+"tenant in Kathmandu with 20000 monthly budget" → {"role":"seller","maxBudget":20000,"minBudget":null,"bedrooms":null,"listingIntent":"rent","propertyType":null}
+"I am a buyer looking for house under 2 crore" → {"role":"buyer","maxBudget":20000000,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":"house"}
+
+Key rule: if the query says "buyer [criteria]" or "tenant [criteria]" WITHOUT "I am/I'm/as a" before it, the person is a SELLER searching FOR a buyer or tenant — role is "seller". If they say "I am a buyer..." or "as a buyer..." they are identifying themselves — role is "buyer".`
           },
           { role: 'user', content: question }
         ],
@@ -1259,10 +1353,10 @@ Examples:
     if (aiIntent?.minBudget != null && !parsed.minNPR) parsed.minNPR = aiIntent.minBudget;
     if (aiIntent?.bedrooms  != null && !parsed.bedrooms)  parsed.bedrooms  = aiIntent.bedrooms;
 
-    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId, role);
+    const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut, locationMatchLevel } = await this.searchProperties(question, intent, parsed, options?.ownerId, role);
 
     const properties = allProperties.slice(offset, offset + limit);
-    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut }, role, allProperties.length);
+    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut, locationMatchLevel }, role, allProperties.length);
 
     const result = {
       query: question,
@@ -1458,7 +1552,19 @@ export function detectRole(query: string): 'buyer' | 'seller' {
     'show buyers', 'show tenants', 'show leads',
     'list buyers', 'list tenants',
   ];
-  return sellerSignals.some(s => lower.includes(s)) ? 'seller' : 'buyer';
+  if (sellerSignals.some(s => lower.includes(s))) return 'seller';
+
+  // "buyer in X", "buyer with budget", "buyer under X", "tenant in X" —
+  // query is ABOUT a buyer/tenant as the subject being searched for (seller perspective)
+  // Exclude: "I am a buyer", "as a buyer", "I'm a buyer" — those are buyer self-identification
+  const isSelfBuyer = /\b(i\s+am|i'm|as)\s+a\s+(buyer|tenant)\b/.test(lower);
+  if (!isSelfBuyer) {
+    const buyerAsSubject = /^(a\s+)?(buyer|tenant)\s+(in|for|with|under|having|who|near|around|at)\b/.test(lower)
+      || /\b(buyer|tenant)\s+(in|for|with|under|having|who|near|around)\s+\w/.test(lower);
+    if (buyerAsSubject) return 'seller';
+  }
+
+  return 'buyer';
 }
 
 export function detectListingIntent(query: string): 'sale' | 'rent' | null {
