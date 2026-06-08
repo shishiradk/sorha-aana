@@ -959,13 +959,15 @@ export class RealEstateRAG {
     }
 
     // Hard-filter by price when explicitly specified
+    // price_npr = 0 means "Price on request" — keep those visible even with budget set
+    // Tolerance: 5% (strict) to avoid showing obviously over-budget properties
     if (parsed?.minNPR) {
-      const threshold = parsed.minNPR * 0.9;
-      results = results.filter(p => p.price_npr && p.price_npr >= threshold);
+      const threshold = parsed.minNPR * 0.95;
+      results = results.filter(p => !p.price_npr || p.price_npr >= threshold);
     }
     if (parsed?.maxNPR) {
-      const threshold = parsed.maxNPR * 1.1;
-      results = results.filter(p => p.price_npr && p.price_npr <= threshold);
+      const threshold = parsed.maxNPR * 1.05;
+      results = results.filter(p => !p.price_npr || p.price_npr <= threshold);
     }
 
     // Hard-filter by bedrooms: exclude only if bedroom count is known AND too far off (±2)
@@ -979,7 +981,7 @@ export class RealEstateRAG {
     return { results, locationPhrase, geocodeFailed, outsideCoverage, filteredOut };
   }
 
-  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }, role?: 'buyer' | 'seller'): Promise<string> {
+  async generateAnswer(question: string, properties: any[], intent?: 'sale' | 'rent' | null, parsed?: ParsedIntent, locationCtx?: { locationPhrase: string | null; geocodeFailed: boolean; outsideCoverage: boolean; filteredOut: boolean }, role?: 'buyer' | 'seller', totalCount?: number): Promise<string> {
     if (properties.length === 0) {
       if (role === 'seller') {
         const locDesc = locationCtx?.locationPhrase ? ` in ${locationCtx.locationPhrase}` : '';
@@ -1067,6 +1069,7 @@ export class RealEstateRAG {
     const parsedNote = intentParts.length ? `Parsed user filters: ${intentParts.join(', ')}.` : '';
 
     const isSeller = role === 'seller';
+    const actualTotal = totalCount ?? properties.length;
     const systemContext = isSeller
       ? `You are a real estate AI assistant helping a property owner find potential buyers or tenants interested in their property.`
       : `You are a real estate AI assistant helping users find properties based on their needs.`;
@@ -1076,6 +1079,7 @@ export class RealEstateRAG {
 <user_query>${question.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</user_query>
 ${listingTypeNote}
 ${parsedNote}
+Total matching results: ${actualTotal}. Showing top ${properties.slice(0, contextLimit).length} below.
 
 ${isSeller ? 'Potential buyers/tenants from the database:' : 'Matching properties from the database:'}
 ${context}
@@ -1083,19 +1087,18 @@ ${context}
 INSTRUCTIONS:
 - Use ONLY the data above. Never invent or assume any details.
 - Reply in English only.
+- CRITICAL: ALL properties listed above have already been filtered and validated by the system. Do NOT re-check or re-apply price, bedroom, or any other filters. Do NOT say a property is over budget — if it appears above, it is a valid result.
 ${isSeller ? `- These are BUYERS or TENANTS looking for a property. Summarise each person's requirements: location preference, budget, property type, and contact if available.
 - Group by type if needed (e.g., "Buyers:", "Tenants:").
-- At the end mention the total count and suggest the seller compare their property details against each buyer's requirements.` :
+- At the end say "Found ${actualTotal} potential leads."` :
   locationOnly ? `- The user searched by LOCATION ONLY. List ALL the properties shown above — give a brief summary of each (type, price, area). Do not skip any.
 - Group by property type if there are many (e.g., "Houses:", "Land:", "Rentals:").
-- At the end, mention the total count (e.g., "Found 12 properties in Kaukhola").` : hasFilters && locationCtx?.locationPhrase ? `- The user searched by LOCATION + FILTERS (price/area/bedrooms/features). Prioritize properties that match the filters.
-- Highlight the best filter matches first, then mention others that are in the location but don't match.
-- Clearly state each property's price, area, bedrooms, and other relevant details.` : hasFilters ? `- The user searched with FILTERS (price/area/bedrooms/features). Show properties that best match.
-- Prioritize filter-matched properties. Clearly state relevant details for each.` : `- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).`}
-- If price or bedroom filters were parsed above, explicitly state whether each property fits.
+- At the end say exactly: "Found ${actualTotal} properties."` : hasFilters ? `- The user searched with FILTERS. List each property with its price, area, bedrooms, and key details.
+- Group by property type (e.g., "Houses:", "Land:") if there are multiple types.
+- At the end say exactly: "Found ${actualTotal} properties matching your criteria."` : `- Highlight the 2-3 best matches and briefly explain why each fits the user's request (location, price, type, size).`}
 ${!isSeller ? `- If distance data is available, mention how far each property is from the searched location.
 - If a property is within 1 km, note it as "very close".
-- Show prices exactly as listed. Do not convert or estimate.
+- Show prices exactly as listed. Do not convert or estimate prices.
 - If the user asked for rentals but a property is for sale (or vice versa), mention that clearly.` : ''}
 - If no results are a good fit, say so and suggest how to adjust the search.
 - Be concise. Do not repeat the same details twice.
@@ -1137,44 +1140,79 @@ ${!isSeller ? `- If distance data is available, mention how far each property is
     }
   }
 
-  private async resolveRole(question: string, queryHash: string, override?: 'buyer' | 'seller'): Promise<'buyer' | 'seller'> {
-    if (override) return override;
+  private async resolveIntent(question: string, queryHash: string, overrideRole?: 'buyer' | 'seller'): Promise<{
+    role: 'buyer' | 'seller';
+    maxBudget: number | null;
+    minBudget: number | null;
+    bedrooms: number | null;
+    listingIntent: 'sale' | 'rent' | null;
+    propertyType: string | null;
+  } | null> {
+    // Check KV cache first (24h TTL)
+    const intentKey = `intent:v1:${queryHash}`;
+    const cached = await this.env.SORHAAANA_CACHE.get(intentKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (overrideRole) parsed.role = overrideRole;
+        return parsed;
+      } catch {}
+    }
 
-    // Fast path: keyword signals are unambiguous
+    // Keyword fast-path for role — if clearly seller, skip AI for role at least
     const kwRole = detectRole(question);
-    if (kwRole === 'seller') return 'seller';
 
-    // Check KV for a cached AI decision (24h TTL, versioned so prompt changes invalidate)
-    const roleKey = `role:v2:${queryHash}`;
-    const cachedRole = await this.env.SORHAAANA_CACHE.get(roleKey);
-    if (cachedRole === 'seller' || cachedRole === 'buyer') return cachedRole;
-
-    // LLaMA reasoning for ambiguous queries
     try {
       const response = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
         messages: [
           {
             role: 'system',
-            content: `You classify Nepal real estate queries into exactly one of two modes.
+            content: `You extract Nepal real estate search intent. Return ONLY a JSON object, no explanation.
 
-"seller" = the person already has a property and wants to find buyers, tenants, clients, or leads
-"buyer" = the person wants to find a property to buy or rent
+Fields:
+- role: "buyer" (user wants to find/buy/rent a property) or "seller" (user wants buyers/tenants/leads for their property)
+- maxBudget: max price in NPR as integer (1 crore=10000000, 1 lakh=100000), or null
+- minBudget: min price in NPR as integer, or null
+- bedrooms: number of bedrooms as integer, or null
+- listingIntent: "sale" if buying/selling, "rent" if renting, or null
+- propertyType: "house"/"land"/"flat"/"apartment"/"shop"/"commercial"/"hotel" or null
 
-Examples of seller: "I need a buyer", "find me a tenant for my flat", "who wants land in Pokhara", "looking for someone to buy my house", "need clients", "ghar kinna khojdai xa ko xa" (someone who wants to buy)
-Examples of buyer: "3 bedroom house in Pokhara", "flat for rent under 15000", "land near lake", "show me houses"
-
-Reply with ONLY the single word "seller" or "buyer". No explanation.`
+Examples:
+"buyer in Pokhara under a budget of 1.5 crores" → {"role":"buyer","maxBudget":15000000,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":null}
+"find me a tenant for 2bhk flat" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":2,"listingIntent":"rent","propertyType":"flat"}
+"3 bedroom house under 50 lakhs" → {"role":"buyer","maxBudget":5000000,"minBudget":null,"bedrooms":3,"listingIntent":"sale","propertyType":"house"}
+"land between 1 crore and 2 crore" → {"role":"buyer","maxBudget":20000000,"minBudget":10000000,"bedrooms":null,"listingIntent":"sale","propertyType":"land"}
+"I need buyer for my land" → {"role":"seller","maxBudget":null,"minBudget":null,"bedrooms":null,"listingIntent":"sale","propertyType":"land"}`
           },
           { role: 'user', content: question }
         ],
-        max_tokens: 5,
+        max_tokens: 120,
       });
-      const aiRole = response?.response?.trim().toLowerCase() === 'seller' ? 'seller' : 'buyer';
-      await this.env.SORHAAANA_CACHE.put(roleKey, aiRole, { expirationTtl: 86400 });
-      console.log(`AI role detect: "${question}" → ${aiRole}`);
-      return aiRole;
-    } catch {
-      return 'buyer';
+
+      const raw = response?.response?.trim() ?? '';
+      const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      if (firstBrace === -1 || lastBrace === -1) throw new Error('No JSON in response');
+
+      const intent = JSON.parse(jsonStr.slice(firstBrace, lastBrace + 1));
+
+      // Keyword seller signal overrides AI (keywords are unambiguous)
+      if (kwRole === 'seller') intent.role = 'seller';
+      if (overrideRole) intent.role = overrideRole;
+
+      // Normalise types
+      intent.maxBudget = typeof intent.maxBudget === 'number' ? intent.maxBudget : null;
+      intent.minBudget = typeof intent.minBudget === 'number' ? intent.minBudget : null;
+      intent.bedrooms  = typeof intent.bedrooms  === 'number' ? intent.bedrooms  : null;
+
+      await this.env.SORHAAANA_CACHE.put(intentKey, JSON.stringify(intent), { expirationTtl: 86400 });
+      console.log(`AI intent: "${question}" →`, JSON.stringify(intent));
+      return intent;
+    } catch (e) {
+      console.log('AI intent failed, falling back to regex:', e);
+      // Return a minimal intent using keyword detection
+      return { role: kwRole, maxBudget: null, minBudget: null, bedrooms: null, listingIntent: null, propertyType: null };
     }
   }
 
@@ -1185,14 +1223,15 @@ Reply with ONLY the single word "seller" or "buyer". No explanation.`
     const limit = Math.min(options?.limit || 20, 50);
     const offset = options?.offset || 0;
 
-    // Normalize and hash query early — shared between role cache key and query cache key
+    // Normalize and hash query early — shared between intent cache key and query cache key
     const cacheVersion = this.env.CACHE_VERSION || '1';
     const normalizedQ = question.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[?!.,]+$/, '');
     const queryHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalizedQ));
     const queryHash = [...new Uint8Array(queryHashBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
 
-    // Resolve role: keyword fast-path → AI reasoning fallback (result cached in KV)
-    const role = await this.resolveRole(question, queryHash, options?.role);
+    // AI intent extraction: role + price + bedrooms + listing intent in one call (cached 24h)
+    const aiIntent = await this.resolveIntent(question, queryHash, options?.role);
+    const role = aiIntent?.role ?? detectRole(question);
 
     // Smart query cache (KV):
     // - Key: rag:<version>:<hash> — includes CACHE_VERSION for deploy-time invalidation
@@ -1212,12 +1251,18 @@ Reply with ONLY the single word "seller" or "buyer". No explanation.`
       return hit;
     }
 
-    const intent = detectListingIntent(question);
+    // AI intent supplements regex — AI handles natural language, regex handles specific formats
+    const intent = aiIntent?.listingIntent ?? detectListingIntent(question);
     const parsed = extractParsedIntent(question);
+    // AI fills in values that regex missed (never overwrites a successful regex parse)
+    if (aiIntent?.maxBudget != null && !parsed.maxNPR) parsed.maxNPR = aiIntent.maxBudget;
+    if (aiIntent?.minBudget != null && !parsed.minNPR) parsed.minNPR = aiIntent.minBudget;
+    if (aiIntent?.bedrooms  != null && !parsed.bedrooms)  parsed.bedrooms  = aiIntent.bedrooms;
+
     const { results: allProperties, locationPhrase, geocodeFailed, outsideCoverage, filteredOut } = await this.searchProperties(question, intent, parsed, options?.ownerId, role);
 
     const properties = allProperties.slice(offset, offset + limit);
-    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut }, role);
+    const generatedAnswer = await this.generateAnswer(question, properties, intent, parsed, { locationPhrase, geocodeFailed, outsideCoverage, filteredOut }, role, allProperties.length);
 
     const result = {
       query: question,
@@ -1486,9 +1531,23 @@ export function extractParsedIntent(query: string): ParsedIntent {
     minNPR = toNPR(rangeMatch[1], rangeMatch[2]);
     maxNPR = toNPR(rangeMatch[3], rangeMatch[4]);
   } else {
-    // Under: "under 1 crore", "below 50lakhs", "less than 1cr"
-    const underMatch = lower.match(/(?:under|below|less\s+than|upto|up\s+to|max|maximum)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
+    // Under: "under 1 crore", "below 50lakhs", "under a budget of 1.5 crores", "within budget of 2cr"
+    const underMatch = lower.match(/(?:under|below|less\s+than|upto|up\s+to|max|maximum|within)\s*(?:a\s+)?(?:budget\s+(?:of\s+)?)?(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
     if (underMatch) maxNPR = toNPR(underMatch[1], underMatch[2]);
+
+    // Budget phrasing: "budget of 1.5 crore", "budget is 2cr", "1.5 crore budget", "my budget 1cr"
+    if (!maxNPR) {
+      const budgetOf = lower.match(/budget\s*(?:of|is|:)?\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
+      if (budgetOf) maxNPR = toNPR(budgetOf[1], budgetOf[2]);
+    }
+    if (!maxNPR) {
+      const budgetSuffix = lower.match(/(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\s+(?:is\s+(?:my\s+)?)?budget\b/);
+      if (budgetSuffix) maxNPR = toNPR(budgetSuffix[1], budgetSuffix[2]);
+    }
+    if (!maxNPR) {
+      const afford = lower.match(/(?:afford|spend(?:ing)?)\s+(?:up\s+to\s+)?(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);
+      if (afford) maxNPR = toNPR(afford[1], afford[2]);
+    }
 
     // Over: "above 5cr", "over 1 crore", "more than 50 lakh"
     const overMatch = lower.match(/(?:above|over|more\s+than|minimum|min|at\s+least)\s*(?:npr\s*)?(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|crs?|thousand|[klL])\b/);

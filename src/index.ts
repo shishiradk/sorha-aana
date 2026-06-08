@@ -344,7 +344,7 @@ export default {
         if (authErr) return authErr;
         try {
           let deleted = 0;
-          for (const prefix of ['rag:', 'ai:', 'role:']) {
+          for (const prefix of ['rag:', 'ai:', 'role:', 'intent:']) {
             let cursor: string | undefined;
             do {
               const page = await env.SORHAAANA_CACHE.list({ prefix, cursor });
